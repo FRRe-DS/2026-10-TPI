@@ -44,6 +44,3 @@ Thumbs.db
 *.sublime-project
 *.sublime-workspace
 
-# Local AI tooling
-.agents/
-skills-lock.json

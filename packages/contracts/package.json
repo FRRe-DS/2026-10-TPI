@@ -1,0 +1,14 @@
+{
+  "name": "@g10-m8/contracts",
+  "version": "1.0.0",
+  "description": "Contratos compartidos OpenAPI y tipos de eventos para M8",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc -w"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.3"
+  }
+}

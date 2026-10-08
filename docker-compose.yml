@@ -1,0 +1,66 @@
+version: '3.8'
+
+services:
+  # Base de Datos PostgreSQL local (para quienes desarrollen sin conexión a Supabase)
+  postgres:
+    image: postgres:16-alpine
+    container_name: g10_m8_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: m8_db
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: [ 'CMD-SHELL', 'pg_isready -U postgres -d m8_db' ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Redis para expiración y TTL de códigos QR (RF-8.3)
+  redis:
+    image: redis:7-alpine
+    container_name: g10_m8_redis
+    restart: unless-stopped
+    ports:
+      - '6379:6379'
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: [ 'CMD', 'redis-cli', 'ping' ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # RabbitMQ para comunicación asíncrona de eventos (M5, M6, M7, M9 -> M8)
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: g10_m8_rabbitmq
+    restart: unless-stopped
+    ports:
+      - '5672:5672' # AMQP protocol
+      - '15672:15672' # Management Web Console (http://localhost:15672, guest:guest)
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: [ 'CMD', 'rabbitmq-diagnostics', 'check_running' ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Mailpit para capturar y previsualizar emails en local (sin enviar correos reales)
+  mailpit:
+    image: axllent/mailpit:latest
+    container_name: g10_m8_mailpit
+    restart: unless-stopped
+    ports:
+      - '1025:1025' # Servidor SMTP
+      - '8025:8025' # Web UI para ver emails (http://localhost:8025)
+
+volumes:
+  postgres_data:
+  redis_data:
+  rabbitmq_data:

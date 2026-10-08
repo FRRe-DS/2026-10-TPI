@@ -1,0 +1,137 @@
+// Prisma Schema para M8: Notificaciones, Documentos y Soporte
+// Compatible 100% con PostgreSQL local (Docker) y Supabase Cloud
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// -------------------------------------------------------------
+// Subdominio: Notificaciones (RF-8.1, RF-8.2, RF-8.6)
+// -------------------------------------------------------------
+enum NotificationChannel {
+  EMAIL
+  PUSH
+  SMS
+}
+
+enum NotificationStatus {
+  PENDING
+  SENT
+  FAILED
+}
+
+model NotificationLog {
+  id            String              @id @default(uuid())
+  channel       NotificationChannel @default(EMAIL)
+  recipient     String
+  subject       String
+  content       String              @db.Text
+  status        NotificationStatus  @default(PENDING)
+  retryCount    Int                 @default(0)
+  lastError     String?             @db.Text
+  referenceId   String?             // tripId o reservationId
+  referenceType String?             // TRIP, RESERVATION
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+
+  @@index([recipient])
+  @@index([status])
+  @@index([referenceId])
+}
+
+// -------------------------------------------------------------
+// Subdominio: Documentos y QR (RF-8.3, RF-8.4, RF-8.5)
+// -------------------------------------------------------------
+model DocumentReceipt {
+  id          String   @id @default(uuid())
+  receiptCode String   @unique // Ej. REC-2026-00001
+  tripId      String?
+  paymentId   String?
+  passengerId String
+  amount      Decimal  @db.Decimal(10, 2)
+  currency    String   @default("ARS")
+  fileUrl     String?  // URL local o Supabase Storage
+  metadata    Json?    // Desglose de origen, destino, conductor, impuestos
+  createdAt   DateTime @default(now())
+
+  @@index([tripId])
+  @@index([passengerId])
+}
+
+model QrVerificationToken {
+  id          String    @id @default(uuid())
+  token       String    @unique
+  tripId      String
+  passengerId String
+  isUsed      Boolean   @default(false)
+  usedAt      DateTime?
+  expiresAt   DateTime
+  createdAt   DateTime  @default(now())
+
+  @@index([tripId])
+  @@index([token])
+}
+
+// -------------------------------------------------------------
+// Subdominio: Soporte y Tickets (RF-8.7)
+// -------------------------------------------------------------
+enum TicketReferenceType {
+  TRIP
+  RESERVATION
+  PAYMENT
+  OTHER
+}
+
+enum TicketStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+  CLOSED
+}
+
+enum TicketPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+model SupportTicket {
+  id             String              @id @default(uuid())
+  ticketNumber   String              @unique // Ej. TCK-1001
+  referenceId    String
+  referenceType  TicketReferenceType @default(TRIP)
+  subject        String
+  description    String              @db.Text
+  status         TicketStatus        @default(OPEN)
+  priority       TicketPriority      @default(MEDIUM)
+  createdBy      String              // ID del usuario o conductor
+  assignedTo     String?             // ID del operador de soporte
+  resolutionNote String?             @db.Text
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+
+  messages       TicketMessage[]
+
+  @@index([referenceId])
+  @@index([status])
+  @@index([createdBy])
+}
+
+model TicketMessage {
+  id         String        @id @default(uuid())
+  ticketId   String
+  ticket     SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  sender     String
+  senderRole String        // CLIENTE, CONDUCTOR, OPERADOR
+  message    String        @db.Text
+  createdAt  DateTime      @default(now())
+
+  @@index([ticketId])
+}

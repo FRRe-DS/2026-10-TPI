@@ -1,0 +1,34 @@
+name: Continuous Integration (CI)
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  validate:
+    name: Lint, Test and Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Código
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Instalar Dependencias
+        run: npm ci
+
+      - name: Validar Formato y Linters
+        run: npm run lint --if-present
+
+      - name: Ejecutar Pruebas Automatizadas
+        run: npm run test --if-present
+
+      - name: Compilar Workspaces
+        run: npm run build

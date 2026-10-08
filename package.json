@@ -1,0 +1,36 @@
+{
+  "name": "g10-m8-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Módulo 8: Notificaciones, Documentos y Soporte - Grupo 10 (Desarrollo de Software 2026)",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev:backend": "npm run start:dev --workspace=apps/backend",
+    "dev:frontend": "npm run dev --workspace=apps/frontend",
+    "build": "npm run build --workspaces",
+    "test": "npm run test --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present",
+    "docker:up": "docker compose up -d",
+    "docker:down": "docker compose down",
+    "docker:logs": "docker compose logs -f",
+    "prisma:generate": "npm run prisma:generate --workspace=apps/backend",
+    "prisma:migrate": "npm run prisma:migrate --workspace=apps/backend",
+    "prisma:studio": "npm run prisma:studio --workspace=apps/backend"
+  },
+  "keywords": [
+    "microservices",
+    "nestjs",
+    "hexagonal-architecture",
+    "rabbitmq",
+    "redis",
+    "supabase",
+    "postgresql",
+    "react",
+    "vite"
+  ],
+  "author": "Grupo 10 - Desarrollo de Software",
+  "license": "UNLICENSED"
+}

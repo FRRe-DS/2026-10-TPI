@@ -1,0 +1,324 @@
+openapi: 3.0.3
+info:
+  title: "Módulo 8: Notificaciones, Documentos y Soporte (G10-M8)"
+  description: "Contratos de interfaz REST oficiales para M8 - Plataforma Distribuida de Movilidad Urbana."
+  version: "1.0.0"
+  contact:
+    name: "Grupo 10 - Desarrollo de Software 2026"
+
+servers:
+  - url: http://localhost:3000/api/v1
+    description: Servidor de desarrollo local
+
+paths:
+  /health:
+    get:
+      summary: Verificación de estado del servicio
+      operationId: getHealth
+      tags:
+        - Health
+      responses:
+        '200':
+          description: Servicio saludable
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  timestamp:
+                    type: string
+                    format: date-time
+
+  /documents/qr/generate:
+    post:
+      summary: Generar código QR temporal de un solo uso (RF-8.3)
+      operationId: generateQr
+      tags:
+        - Documentos y QR
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenerateQrDto'
+      responses:
+        '201':
+          description: QR generado exitosamente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QrResponseDto'
+        '400':
+          description: Parámetros inválidos
+
+  /documents/qr/verify:
+    post:
+      summary: Validar y consumir código QR de un solo uso (RF-8.3 / RF-6.4)
+      operationId: verifyQr
+      tags:
+        - Documentos y QR
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerifyQrDto'
+      responses:
+        '200':
+          description: QR verificado y consumido
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  valid:
+                    type: boolean
+                    example: true
+                  tripId:
+                    type: string
+                  verifiedAt:
+                    type: string
+                    format: date-time
+        '404':
+          description: Token QR no encontrado o ya consumido
+        '410':
+          description: Token QR expirado (TTL vencido)
+
+  /documents/receipts/resend:
+    post:
+      summary: Reenviar comprobante PDF por correo electrónico (RF-8.5)
+      operationId: resendReceipt
+      tags:
+        - Documentos y QR
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResendReceiptDto'
+      responses:
+        '200':
+          description: Comprobante reenviado exitosamente
+        '404':
+          description: Comprobante no encontrado
+
+  /notifications/logs:
+    get:
+      summary: Consultar historial de entregas de notificaciones (RF-8.6)
+      operationId: getNotificationLogs
+      tags:
+        - Notificaciones
+      parameters:
+        - name: recipient
+          in: query
+          schema:
+            type: string
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [PENDING, SENT, FAILED]
+      responses:
+        '200':
+          description: Lista de notificaciones
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/NotificationLogDto'
+
+  /support/tickets:
+    post:
+      summary: Crear ticket de soporte asociado a viaje, reserva o pago (RF-8.7)
+      operationId: createTicket
+      tags:
+        - Soporte y Tickets
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateTicketDto'
+      responses:
+        '201':
+          description: Ticket creado exitosamente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TicketResponseDto'
+    get:
+      summary: Listar tickets de soporte (RF-8.7)
+      operationId: listTickets
+      tags:
+        - Soporte y Tickets
+      responses:
+        '200':
+          description: Lista de tickets
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/TicketResponseDto'
+
+  /support/tickets/{ticketId}/status:
+    patch:
+      summary: Actualizar estado de ticket de soporte (RF-8.7)
+      operationId: updateTicketStatus
+      tags:
+        - Soporte y Tickets
+      parameters:
+        - name: ticketId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - status
+              properties:
+                status:
+                  type: string
+                  enum: [OPEN, IN_PROGRESS, RESOLVED, CLOSED]
+                resolutionNote:
+                  type: string
+      responses:
+        '200':
+          description: Estado actualizado
+        '404':
+          description: Ticket no encontrado
+
+components:
+  schemas:
+    GenerateQrDto:
+      type: object
+      required:
+        - tripId
+        - passengerId
+      properties:
+        tripId:
+          type: string
+          example: "trip-uuid-1234"
+        passengerId:
+          type: string
+          example: "usr-passenger-456"
+        ttlSeconds:
+          type: integer
+          default: 300
+          example: 300
+
+    QrResponseDto:
+      type: object
+      properties:
+        token:
+          type: string
+          example: "qr-sec-token-abcxyz"
+        qrDataUrl:
+          type: string
+          description: "Data URL en formato Base64 para renderizar imagen PNG"
+        expiresAt:
+          type: string
+          format: date-time
+
+    VerifyQrDto:
+      type: object
+      required:
+        - token
+        - tripId
+      properties:
+        token:
+          type: string
+        tripId:
+          type: string
+
+    ResendReceiptDto:
+      type: object
+      required:
+        - tripId
+        - email
+      properties:
+        tripId:
+          type: string
+        email:
+          type: string
+          format: email
+
+    NotificationLogDto:
+      type: object
+      properties:
+        id:
+          type: string
+        channel:
+          type: string
+          enum: [EMAIL, PUSH, SMS]
+        recipient:
+          type: string
+        subject:
+          type: string
+        status:
+          type: string
+          enum: [PENDING, SENT, FAILED]
+        retryCount:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+
+    CreateTicketDto:
+      type: object
+      required:
+        - referenceId
+        - referenceType
+        - subject
+        - description
+        - createdBy
+      properties:
+        referenceId:
+          type: string
+          example: "trip-1234"
+        referenceType:
+          type: string
+          enum: [TRIP, RESERVATION, PAYMENT]
+        subject:
+          type: string
+          example: "Problema con el cobro del viaje"
+        description:
+          type: string
+          example: "Se debitó dos veces el importe de la tarifa."
+        createdBy:
+          type: string
+          example: "usr-passenger-456"
+
+    TicketResponseDto:
+      type: object
+      properties:
+        id:
+          type: string
+        referenceId:
+          type: string
+        referenceType:
+          type: string
+        subject:
+          type: string
+        description:
+          type: string
+        status:
+          type: string
+          enum: [OPEN, IN_PROGRESS, RESOLVED, CLOSED]
+        createdBy:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time

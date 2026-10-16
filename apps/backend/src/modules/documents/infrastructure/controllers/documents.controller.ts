@@ -18,7 +18,10 @@ export class DocumentsController {
 
   @Post('qr/verify')
   @ApiOperation({ summary: 'Validar y consumir el código QR (RF-8.3 / RF-6.4)' })
-  @ApiResponse({ status: 200, description: 'Código QR verificado y consumido' })
+  @ApiResponse({ status: 200, description: 'Código QR verificado y consumido exitosamente' })
+  @ApiResponse({ status: 400, description: 'El código QR no corresponde al viaje especificado' })
+  @ApiResponse({ status: 404, description: 'Código QR no encontrado o inválido' })
+  @ApiResponse({ status: 410, description: 'Código QR ya utilizado o expirado (TTL agotado)' })
   async verifyQr(@Body() dto: VerifyQrDto) {
     return this.documentsService.verifyQr(dto);
   }

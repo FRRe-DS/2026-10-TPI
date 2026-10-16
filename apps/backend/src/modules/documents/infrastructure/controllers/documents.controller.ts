@@ -2,12 +2,16 @@ import { Controller, Post, Body, Res, Param, Get } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
 import { DocumentsService } from '../../application/documents.service';
 import { GenerateQrDto, VerifyQrDto, ResendReceiptDto } from '../../application/dto/documents.dto';
+import { GenerateReceiptPdfUseCase } from '../../application/use-cases/generate-receipt-pdf.use-case';
 import { Response } from 'express';
 
 @ApiTags('Documentos y QR')
 @Controller('documents')
 export class DocumentsController {
-  constructor(private readonly documentsService: DocumentsService) { }
+  constructor(
+  private readonly documentsService: DocumentsService,
+  private readonly generateReceiptPdfUseCase: GenerateReceiptPdfUseCase,
+) {}
 
   @Post('qr/generate')
   @ApiOperation({ summary: 'Generar código QR temporal de un solo uso para inicio de viaje (RF-8.3)' })
@@ -31,22 +35,32 @@ export class DocumentsController {
   }
 
   @Get('receipts/:tripId/download')
-  @ApiOperation({ summary: 'Descargar comprobante de viaje generado en PDF (RF-8.4)' })
-  async downloadPdf(@Param('tripId') tripId: string, @Res() res: Response) {
-    const pdfBuffer = await this.documentsService.generateReceiptPdfBuffer({
-      tripId,
-      passengerEmail: 'pasajero@ejemplo.com',
-      amount: 3500.0,
-      currency: 'ARS',
-      driverName: 'Conductor Asignado',
-    });
+@ApiOperation({
+  summary: 'Descargar comprobante de viaje generado en PDF (RF-8.4)',
+})
+async downloadPdf(
+  @Param('tripId') tripId: string,
+  @Res() res: Response,
+) {
+  // Datos temporales para probar la generación sin base de datos.
+  const pdfBytes = await this.generateReceiptPdfUseCase.execute({
+    tripId,
+    passengerEmail: 'pasajero@ejemplo.com',
+    amount: 3500,
+    currency: 'ARS',
+    driverName: 'Conductor Asignado',
+    issuedAt: new Date(),
+  });
 
-    res.set({
-      'Content-Type': 'application/pdf',
-      'Content-Disposition': `attachment; filename=comprobante-${tripId}.pdf`,
-      'Content-Length': pdfBuffer.length,
-    });
+  const pdfBuffer = Buffer.from(pdfBytes);
 
-    res.end(pdfBuffer);
-  }
+  res.set({
+    'Content-Type': 'application/pdf',
+    'Content-Disposition':
+      `attachment; filename="comprobante-${encodeURIComponent(tripId)}.pdf"`,
+    'Content-Length': pdfBuffer.length,
+  });
+
+  res.end(pdfBuffer);
+}
 }

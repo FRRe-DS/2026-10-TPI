@@ -39,9 +39,16 @@ export class NotificationsService {
                   <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;"/>
                   <small style="color: #888;">Plataforma de Movilidad Urbana - Módulo 8 (G10)</small>
                 </div>`,
+          attachments: dto.attachments?.map((att) => ({
+            filename: att.filename,
+            content: Buffer.isBuffer(att.content)
+              ? att.content
+              : Buffer.from(att.content),
+            contentType: att.contentType || 'application/pdf',
+          })),
         });
         this.logger.log(`Email enviado a ${dto.recipient}`);
-      } catch (err) {
+      } catch (err: any) {
         this.logger.warn(`Error enviando email: ${err.message}`);
         status = 'FAILED';
         errorMessage = err.message;
@@ -61,14 +68,15 @@ export class NotificationsService {
           lastError: errorMessage,
         },
       });
-      return { success: status === 'SENT', id: log.id, status };
-    } catch (dbErr) {
+      return { success: status === 'SENT', id: log.id, status, error: errorMessage };
+    } catch (dbErr: any) {
       this.logger.warn(`⚠ No se pudo registrar en base de datos: ${dbErr.message}`);
       return {
         success: status === 'SENT',
         id: 'mem-' + Date.now(),
         status,
         note: 'Procesado sin persistencia DB activa',
+        error: errorMessage,
       };
     }
   }

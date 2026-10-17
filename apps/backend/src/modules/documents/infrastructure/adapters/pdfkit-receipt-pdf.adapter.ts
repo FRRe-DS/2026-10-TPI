@@ -28,9 +28,22 @@ export class PdfKitReceiptPdfAdapter
 
       doc.moveDown(2);
 
-      const issuedAt = data.issuedAt.toLocaleString('es-AR', {
+      const date =
+        data.issuedAt instanceof Date
+          ? data.issuedAt
+          : new Date(data.issuedAt);
+
+      const issuedAt = date.toLocaleString('es-AR', {
         timeZone: 'America/Argentina/Buenos_Aires',
+        hour12: false,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
       });
+
 
       doc.fontSize(12).text(`ID de viaje: ${data.tripId}`);
       doc.text(`Fecha de emisión: ${issuedAt}`);

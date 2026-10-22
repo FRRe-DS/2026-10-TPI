@@ -23,15 +23,20 @@ export class SupportController {
     return this.supportService.findAll(referenceId, status);
   }
 
-  @Get('tickets/:id')
-  @ApiOperation({ summary: 'Obtener detalle de un ticket de soporte (RF-8.7)' })
-  async getTicket(@Param('id') id: string) {
-    return this.supportService.findOne(id);
+  @Get('tickets/:ticketId')
+  @ApiOperation({ summary: 'Obtener detalle de un ticket de soporte por UUID o ticketNumber (RF-8.7)' })
+  @ApiResponse({ status: 200, description: 'Ticket encontrado' })
+  @ApiResponse({ status: 404, description: 'Ticket no encontrado' })
+  async getTicket(@Param('ticketId') ticketId: string) {
+    return this.supportService.findOne(ticketId);
   }
 
-  @Patch('tickets/:id/status')
+  @Patch('tickets/:ticketId/status')
   @ApiOperation({ summary: 'Actualizar el estado de resolución de un ticket (RF-8.7)' })
-  async updateStatus(@Param('id') id: string, @Body() dto: UpdateTicketStatusDto) {
-    return this.supportService.updateStatus(id, dto);
+  @ApiResponse({ status: 200, description: 'Estado actualizado' })
+  @ApiResponse({ status: 400, description: 'Transición de estado inválida o ticket CLOSED' })
+  @ApiResponse({ status: 404, description: 'Ticket no encontrado' })
+  async updateStatus(@Param('ticketId') ticketId: string, @Body() dto: UpdateTicketStatusDto) {
+    return this.supportService.updateStatus(ticketId, dto);
   }
 }

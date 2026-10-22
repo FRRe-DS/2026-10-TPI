@@ -111,11 +111,12 @@ export default function App() {
   };
 
   const handleGenerateQr = async () => {
+    setVerifyResult(null);
     try {
       const res = await fetch(`${API_BASE}/documents/qr/generate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tripId: qrTripId, passengerId: 'usr-123', ttlSeconds: 300 }),
+        body: JSON.stringify({ tripId: qrTripId.trim(), passengerId: 'usr-123', ttlSeconds: 300 }),
       });
       if (res.ok) {
         const data = await res.json();
@@ -135,16 +136,24 @@ export default function App() {
   };
 
   const handleVerifyQr = async () => {
+    if (!verifyToken || !verifyToken.trim()) {
+      setVerifyResult({ valid: false, message: 'Por favor, primero genera un código QR o ingresa un token válido.' });
+      return;
+    }
     try {
       const res = await fetch(`${API_BASE}/documents/qr/verify`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token: verifyToken, tripId: qrTripId }),
+        body: JSON.stringify({ token: verifyToken.trim(), tripId: qrTripId.trim() }),
       });
       const data = await res.json();
-      setVerifyResult(data);
+      if (!res.ok) {
+        setVerifyResult({ valid: false, message: data.message || 'Error en la verificación del código QR.' });
+      } else {
+        setVerifyResult(data);
+      }
     } catch {
-      setVerifyResult({ valid: true, message: 'QR validado correctamente en modo local' });
+      setVerifyResult({ valid: false, message: 'No se pudo conectar con el servidor backend.' });
     }
   };
 

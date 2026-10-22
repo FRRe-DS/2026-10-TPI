@@ -93,7 +93,7 @@ export class ResendReceiptUseCase {
     // 6. No informar éxito si falla el envío de correo
     if (!sendResult.success) {
       this.logger.error(
-        `Fallo al enviar correo a ${dto.email} para comprobante ${receipt.receiptCode}: ${sendResult.error}`,
+        `Fallo al enviar correo a ${dto.email} para comprobante ${receipt.receiptCode}`,
       );
       throw new BadGatewayException(
         `No se pudo enviar el correo electrónico con el comprobante adjunto a "${dto.email}". ` +

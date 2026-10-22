@@ -1,5 +1,14 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsEnum, IsNotEmpty, IsOptional, IsString } from 'class-validator';
+import {
+  isEmail,
+  IsEnum,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  registerDecorator,
+  ValidationArguments,
+  ValidationOptions,
+} from 'class-validator';
 
 export enum NotificationChannelDto {
   EMAIL = 'EMAIL',
@@ -13,12 +22,33 @@ export interface NotificationAttachmentDto {
   contentType?: string;
 }
 
+function IsEmailForEmailChannel(validationOptions?: ValidationOptions) {
+  return (target: object, propertyName: string) => {
+    registerDecorator({
+      name: 'isEmailForEmailChannel',
+      target: target.constructor,
+      propertyName,
+      options: validationOptions,
+      validator: {
+        validate(value: unknown, args: ValidationArguments) {
+          const dto = args.object as SendNotificationDto;
+          return (
+            dto.channel !== NotificationChannelDto.EMAIL ||
+            (typeof value === 'string' && isEmail(value))
+          );
+        },
+      },
+    });
+  };
+}
+
 export class SendNotificationDto {
   @ApiProperty({ enum: NotificationChannelDto, default: NotificationChannelDto.EMAIL })
   @IsEnum(NotificationChannelDto)
   channel: NotificationChannelDto;
 
   @ApiProperty({ example: 'pasajero@ejemplo.com', description: 'Destinatario de la notificación' })
+  @IsEmailForEmailChannel()
   @IsString()
   @IsNotEmpty()
   recipient: string;

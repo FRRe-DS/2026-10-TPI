@@ -48,6 +48,78 @@ Por seguridad de la nube, las claves y contraseñas de la base de datos **no se 
    ```
 2. **Abre el archivo `.env` y pega las variables que yo les voy a compartir por Microsoft Teams** (en el canal `#02-infra-supabase-github`). Ahí tendrán la cadena de conexión de Supabase y las configuraciones listas. No toquen nada más.
 
+#### Envío local de emails con Mailpit (opcional)
+
+Para capturar los emails sin enviarlos a destinatarios reales, levanta Mailpit:
+
+```bash
+docker compose up -d mailpit
+```
+
+En el `.env`, configura `SMTP_HOST=localhost`, `SMTP_PORT=1025`, `SMTP_SECURE=false` y deja `SMTP_USER` y `SMTP_PASS` vacíos. Los mensajes enviados se pueden consultar en `http://localhost:8025`. Para usar otro servidor SMTP, reemplaza esos valores con la configuración correspondiente; con autenticación, configura ambos `SMTP_USER` y `SMTP_PASS`.
+
+#### Notificaciones al finalizar un viaje por RabbitMQ
+
+El backend consume eventos `trip.completed` desde el exchange durable `urban_mobility_events` y la cola durable `m8_notifications_queue`. Para desarrollo local, inicia RabbitMQ con el plugin de administración:
+
+```bash
+docker compose up -d rabbitmq
+```
+
+Verifica que `RABBITMQ_URL`, `RABBITMQ_EXCHANGE`, `RABBITMQ_QUEUE`, `RABBITMQ_EXCHANGE_TYPE=topic` y `RABBITMQ_TRIP_COMPLETED_ROUTING_KEY=trip.completed` coincidan con la configuración del broker. El consumidor crea una cola de reintentos con TTL; `RABBITMQ_NOTIFICATION_MAX_RETRIES` (3 por defecto) y `RABBITMQ_NOTIFICATION_RETRY_DELAY_MS` (30 segundos por defecto) controlan los reintentos. Mantén estable el TTL si la cola retry ya fue creada. Inicia el backend después de RabbitMQ; el consumidor crea las colas y bindings al arrancar.
+
+Cada evento se deduplica por `eventId` en `NotificationLog`. Antes de probar, aplica el nuevo campo del schema a la base configurada y regenera Prisma:
+
+```bash
+npx prisma db push --schema=apps/backend/prisma/schema.prisma
+npm run prisma:generate --workspace=apps/backend
+```
+
+Para probar un evento real desde PowerShell con el usuario/contraseña local predeterminados de RabbitMQ (`guest`/`guest`), publica en el exchange de administración:
+
+```powershell
+$event = @{
+  eventId = [guid]::NewGuid().ToString()
+  eventType = "trip.completed"
+  timestamp = [DateTime]::UtcNow.ToString("o")
+  version = "1.0"
+  data = @{
+    tripId = "trip-demo-1"
+    passengerId = "passenger-demo-1"
+    passengerEmail = "prueba@example.com"
+    driverId = "driver-demo-1"
+    driverName = "Ana"
+    totalFare = 4500.50
+    currency = "ARS"
+    origin = "Origen de prueba"
+    destination = "Destino de prueba"
+    completedAt = [DateTime]::UtcNow.ToString("o")
+  }
+}
+
+$publishBody = @{
+  properties = @{}
+  routing_key = "trip.completed"
+  payload = ($event | ConvertTo-Json -Depth 8 -Compress)
+  payload_encoding = "string"
+} | ConvertTo-Json -Depth 8
+
+$basicAuth = [Convert]::ToBase64String(
+  [Text.Encoding]::ASCII.GetBytes("guest:guest")
+)
+
+Invoke-RestMethod `
+  -Uri "http://localhost:15672/api/exchanges/%2F/urban_mobility_events/publish" `
+  -Method Post `
+  -Headers @{ Authorization = "Basic $basicAuth" } `
+  -ContentType "application/json" `
+  -Body $publishBody
+```
+
+La respuesta del API de administración debe indicar `routed: true`. En los logs del backend se verá que procesó el evento y, si Mailpit está activo y SMTP configurado, el correo aparecerá en `http://localhost:8025`. Si el proveedor falla, el mismo evento se reintentará con demora; al agotar los intentos, el mensaje queda en `m8_notifications_queue.failed` y el log en `NotificationLog` queda en `FAILED`. Una nueva publicación con el mismo `eventId` reintenta el registro fallido; los eventos ya registrados como `SENT` no generan otro email. Si no se dispone de Docker, se puede usar un RabbitMQ alcanzable configurando `RABBITMQ_URL` y apuntando a su consola de administración para publicar el evento.
+
+El canal `SMS` todavía no tiene proveedor implementado y queda registrado como `FAILED`, sin reintentos automáticos ni marcarse como enviado. SMTP no ofrece entrega exactamente una vez: si el servidor acepta el correo y la conexión se pierde antes de confirmar el resultado, un reintento podría entregar un duplicado. El `Message-ID` estable y la deduplicación evitan duplicados en redeliveries confirmadas, pero no pueden eliminar esa limitación del protocolo.
+
 ### Paso 5: Generar el cliente de base de datos (Prisma)
 Una vez que tengas el `.env` con los datos de Supabase, ejecuta este comando para que TypeScript reconozca las tablas y modelos de la base de datos:
 ```bash

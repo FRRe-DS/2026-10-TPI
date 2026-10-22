@@ -1,4 +1,5 @@
 import { NotFoundException, BadGatewayException } from '@nestjs/common';
+import { NotificationStatus } from '@prisma/client';
 import { ResendReceiptUseCase } from './resend-receipt.use-case';
 import {
   ReceiptRecord,
@@ -131,8 +132,7 @@ describe('ResendReceiptUseCase (Unit Tests con Dobles de Prueba)', () => {
       mockNotificationsService.send!.mockResolvedValue({
         success: false,
         id: 'log-fail',
-        status: 'FAILED',
-        error: 'SMTP connection refused on port 1025',
+        status: NotificationStatus.FAILED,
       });
 
       await expect(useCase.execute(dto)).rejects.toThrow(BadGatewayException);

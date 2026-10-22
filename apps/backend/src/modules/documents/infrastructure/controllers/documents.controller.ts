@@ -49,6 +49,7 @@ export class DocumentsController {
   }
 
   @Post('qr/verify')
+  @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Validar y consumir el código QR (RF-8.3 / RF-6.4)' })
   @ApiResponse({ status: 200, description: 'Código QR verificado y consumido exitosamente' })
   @ApiResponse({ status: 400, description: 'El código QR no corresponde al viaje especificado' })
@@ -156,6 +157,7 @@ export class DocumentsController {
   // ─── Reenvío (RF-8.5) ───────────────────────────────────────────────────────
 
   @Post('receipts/resend')
+  @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Reenviar comprobante de viaje por email con PDF adjunto (RF-8.5)',
     description:

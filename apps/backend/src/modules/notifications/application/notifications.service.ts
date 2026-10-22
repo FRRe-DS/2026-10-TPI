@@ -1,4 +1,8 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, InternalServerErrorException, Logger } from '@nestjs/common';
+import {
+  NotificationChannel,
+  NotificationStatus,
+} from '@prisma/client';
 import { SendNotificationDto } from './dto/send-notification.dto';
 import { PrismaService } from '../../../common/prisma.service';
 import * as nodemailer from 'nodemailer';
@@ -33,7 +37,7 @@ export class NotificationsService {
   async send(dto: SendNotificationDto) {
     this.logger.log(`Enviando notificación [${dto.channel}] a: ${dto.recipient}`);
 
-    let status: 'SENT' | 'FAILED' = 'SENT';
+    let status: NotificationStatus = NotificationStatus.SENT;
     let errorMessage: string | null = null;
 
     if (dto.channel === 'EMAIL' && this.transporter) {
@@ -54,7 +58,7 @@ export class NotificationsService {
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         this.logger.warn(`Error enviando email: ${message}`);
-        status = 'FAILED';
+        status = NotificationStatus.FAILED;
         errorMessage = message;
       }
     }
@@ -62,25 +66,31 @@ export class NotificationsService {
     try {
       const log = await this.prisma.notificationLog.create({
         data: {
-          channel: dto.channel as any,
+          channel: NotificationChannel[dto.channel],
           recipient: dto.recipient,
           subject: dto.subject,
           content: dto.content,
-          status: status as any,
+          status,
           referenceId: dto.referenceId,
           referenceType: dto.referenceType,
           lastError: errorMessage,
         },
       });
-      return { success: status === 'SENT', id: log.id, status };
-    } catch (dbErr) {
-      this.logger.warn(`⚠ No se pudo registrar en base de datos: ${dbErr.message}`);
       return {
-        success: status === 'SENT',
-        id: 'mem-' + Date.now(),
+        success: status === NotificationStatus.SENT,
+        id: log.id,
         status,
-        note: 'Procesado sin persistencia DB activa',
       };
+    } catch (dbErr) {
+      const details =
+        dbErr instanceof Error ? dbErr.message : String(dbErr);
+      this.logger.error(
+        `No se pudo guardar el intento de notificación en Supabase: ${details}`,
+        dbErr instanceof Error ? dbErr.stack : undefined,
+      );
+      throw new InternalServerErrorException(
+        'No se pudo registrar el intento de notificación.',
+      );
     }
   }
 

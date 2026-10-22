@@ -1,4 +1,5 @@
 import * as nodemailer from 'nodemailer';
+import { InternalServerErrorException } from '@nestjs/common';
 import { PrismaService } from '../../../common/prisma.service';
 import {
   NotificationChannelDto,
@@ -118,6 +119,22 @@ describe('NotificationsService email delivery', () => {
         data: expect.objectContaining({
           status: 'FAILED',
           lastError: 'SMTP unavailable',
+        }),
+      }),
+    );
+  });
+
+  it('reports a database error instead of returning a success-shaped fallback', async () => {
+    createNotificationLog.mockRejectedValue(new Error('Database unavailable'));
+
+    await expect(service.send(notification)).rejects.toBeInstanceOf(
+      InternalServerErrorException,
+    );
+    expect(createNotificationLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: 'SENT',
+          recipient: 'pasajero@ejemplo.com',
         }),
       }),
     );

@@ -37,6 +37,17 @@ describe('SendNotificationDto', () => {
     ).resolves.toHaveLength(0);
   });
 
+  it('still requires a non-empty recipient for other channels', async () => {
+    const errors = await validate(
+      createDto({
+        channel: NotificationChannelDto.SMS,
+        recipient: '',
+      }),
+    );
+
+    expect(errors.map(({ property }) => property)).toContain('recipient');
+  });
+
   it('rejects a channel outside the supported enum', async () => {
     const errors = await validate(
       Object.assign(createDto(), { channel: 'WHATSAPP' }),

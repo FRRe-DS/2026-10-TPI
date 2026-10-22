@@ -1,9 +1,12 @@
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe, Logger } from '@nestjs/common';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
+import { config as loadEnvironment } from 'dotenv';
+import { resolve } from 'path';
 import { AppModule } from './app.module';
 
 async function bootstrap() {
+  loadEnvironment({ path: resolve(__dirname, '../../../.env') });
   const logger = new Logger('Bootstrap');
   const app = await NestFactory.create(AppModule);
 

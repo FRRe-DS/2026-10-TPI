@@ -10,13 +10,23 @@ export class NotificationsService {
 
   constructor(private readonly prisma: PrismaService) {
     const host = process.env.SMTP_HOST || 'localhost';
-    const port = Number(process.env.SMTP_PORT) || 1025;
+    const port = process.env.SMTP_PORT ? Number(process.env.SMTP_PORT) : 1025;
+    const user = process.env.SMTP_USER;
+    const password = process.env.SMTP_PASS;
+
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      throw new Error('SMTP_PORT debe ser un puerto válido entre 1 y 65535.');
+    }
+
+    if (Boolean(user) !== Boolean(password)) {
+      throw new Error('SMTP_USER y SMTP_PASS deben configurarse juntos.');
+    }
 
     this.transporter = nodemailer.createTransport({
       host,
       port,
-      secure: false,
-      ignoreTLS: true,
+      secure: process.env.SMTP_SECURE === 'true',
+      ...(user && password ? { auth: { user, pass: password } } : {}),
     });
   }
 
@@ -34,17 +44,18 @@ export class NotificationsService {
           subject: dto.subject,
           text: dto.content,
           html: `<div style="font-family: sans-serif; padding: 20px;">
-                  <h2>${dto.subject}</h2>
-                  <p>${dto.content}</p>
+                  <h2>${this.escapeHtml(dto.subject)}</h2>
+                  <p>${this.escapeHtml(dto.content)}</p>
                   <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;"/>
                   <small style="color: #888;">Plataforma de Movilidad Urbana - Módulo 8 (G10)</small>
                 </div>`,
         });
         this.logger.log(`Email enviado a ${dto.recipient}`);
       } catch (err) {
-        this.logger.warn(`Error enviando email: ${err.message}`);
+        const message = err instanceof Error ? err.message : String(err);
+        this.logger.warn(`Error enviando email: ${message}`);
         status = 'FAILED';
-        errorMessage = err.message;
+        errorMessage = message;
       }
     }
 
@@ -86,5 +97,18 @@ export class NotificationsService {
     } catch (e) {
       return [];
     }
+  }
+
+  private escapeHtml(value: string): string {
+    return value.replace(/[&<>"']/g, (character) => {
+      const entities: Record<string, string> = {
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;',
+      };
+      return entities[character];
+    });
   }
 }

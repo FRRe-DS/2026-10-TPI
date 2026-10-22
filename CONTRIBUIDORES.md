@@ -48,6 +48,16 @@ Por seguridad de la nube, las claves y contraseñas de la base de datos **no se 
    ```
 2. **Abre el archivo `.env` y pega las variables que yo les voy a compartir por Microsoft Teams** (en el canal `#02-infra-supabase-github`). Ahí tendrán la cadena de conexión de Supabase y las configuraciones listas. No toquen nada más.
 
+#### Envío local de emails con Mailpit (opcional)
+
+Para capturar los emails sin enviarlos a destinatarios reales, levanta Mailpit:
+
+```bash
+docker compose up -d mailpit
+```
+
+En el `.env`, configura `SMTP_HOST=localhost`, `SMTP_PORT=1025`, `SMTP_SECURE=false` y deja `SMTP_USER` y `SMTP_PASS` vacíos. Los mensajes enviados se pueden consultar en `http://localhost:8025`. Para usar otro servidor SMTP, reemplaza esos valores con la configuración correspondiente; con autenticación, configura ambos `SMTP_USER` y `SMTP_PASS`.
+
 ### Paso 5: Generar el cliente de base de datos (Prisma)
 Una vez que tengas el `.env` con los datos de Supabase, ejecuta este comando para que TypeScript reconozca las tablas y modelos de la base de datos:
 ```bash

@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsEnum, IsNotEmpty, IsOptional, IsString } from 'class-validator';
+import { IsEmail, IsEnum, IsNotEmpty, IsOptional, IsString, ValidateIf } from 'class-validator';
 
 export enum NotificationChannelDto {
   EMAIL = 'EMAIL',
@@ -13,6 +13,8 @@ export class SendNotificationDto {
   channel: NotificationChannelDto;
 
   @ApiProperty({ example: 'pasajero@ejemplo.com', description: 'Destinatario de la notificación' })
+  @ValidateIf((dto: SendNotificationDto) => dto.channel === NotificationChannelDto.EMAIL)
+  @IsEmail()
   @IsString()
   @IsNotEmpty()
   recipient: string;

@@ -20,8 +20,12 @@ jobs:
         with:
           node-version: 20
           cache: 'npm'
+
       - name: Instalar Dependencias
         run: npm ci
+
+      - name: Compilar Contratos Compartidos
+        run: npm run build --workspace=@g10-m8/contracts
 
       - name: Generar Prisma Client
         run: npm run prisma:generate

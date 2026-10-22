@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { PrismaClientKnownRequestError } from '@prisma/client/runtime/library';
 import { PrismaService } from '../../../../common/prisma.service';
 import {
   ReceiptData,
@@ -78,7 +79,7 @@ export class PrismaReceiptRepository implements ReceiptRepositoryPort {
         // Por eso el reintento se ubica aquí, por fuera del bloque $transaction,
         // reiniciando una transacción limpia desde cero.
         const isReceiptCodeCollision =
-          error instanceof Prisma.PrismaClientKnownRequestError &&
+          error instanceof PrismaClientKnownRequestError &&
           error.code === 'P2002' &&
           this.isReceiptCodeTarget(error.meta);
 

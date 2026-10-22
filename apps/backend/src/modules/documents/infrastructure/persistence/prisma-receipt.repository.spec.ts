@@ -2,6 +2,7 @@ import { PrismaReceiptRepository } from './prisma-receipt.repository';
 import { PrismaService } from '../../../../common/prisma.service';
 import { ReceiptData } from '../../domain/ports/receipt.repository.port';
 import { Prisma } from '@prisma/client';
+import { PrismaClientKnownRequestError } from '@prisma/client/runtime/library';
 
 describe('PrismaReceiptRepository (Unit Tests con Doble de Prueba)', () => {
   let repository: PrismaReceiptRepository;
@@ -92,7 +93,7 @@ describe('PrismaReceiptRepository (Unit Tests con Doble de Prueba)', () => {
     });
 
     it('debe reintentar la transacción completa desde cero ante un error P2002 en receiptCode', async () => {
-      const p2002Error = new Prisma.PrismaClientKnownRequestError(
+      const p2002Error = new PrismaClientKnownRequestError(
         'Unique constraint failed on the fields: (`receiptCode`)',
         {
           code: 'P2002',
@@ -138,7 +139,7 @@ describe('PrismaReceiptRepository (Unit Tests con Doble de Prueba)', () => {
     });
 
     it('debe fallar tras alcanzar el límite de 3 intentos si persiste la colisión P2002', async () => {
-      const p2002Error = new Prisma.PrismaClientKnownRequestError(
+      const p2002Error = new PrismaClientKnownRequestError(
         'Unique constraint failed on the fields: (`receiptCode`)',
         {
           code: 'P2002',
@@ -150,7 +151,7 @@ describe('PrismaReceiptRepository (Unit Tests con Doble de Prueba)', () => {
       mockTx.documentReceipt.findFirst.mockResolvedValue(null);
       mockTx.documentReceipt.create.mockRejectedValue(p2002Error);
 
-      await expect(repository.save(baseData)).rejects.toThrow(Prisma.PrismaClientKnownRequestError);
+      await expect(repository.save(baseData)).rejects.toThrow(PrismaClientKnownRequestError);
 
       // Exactamente 3 intentos máximos
       expect(mockPrisma.$transaction).toHaveBeenCalledTimes(3);

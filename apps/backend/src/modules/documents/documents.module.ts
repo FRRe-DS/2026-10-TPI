@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { DocumentsController } from './infrastructure/controllers/documents.controller';
 import { DocumentsService } from './application/documents.service';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { RedisService } from '../../common/redis.service';
 
 import {
   RECEIPT_PDF_GENERATOR,
@@ -19,11 +20,39 @@ import { RegisterReceiptUseCase } from './application/use-cases/register-receipt
 import { ResendReceiptUseCase } from './application/use-cases/resend-receipt.use-case';
 import { NotificationsService } from '../notifications/application/notifications.service';
 
+import {
+  QR_TOKEN_REPOSITORY_PORT,
+  QrTokenRepositoryPort,
+} from './domain/ports/qr-token.repository.port';
+import { PrismaQrTokenRepository } from './infrastructure/persistence/prisma-qr-token.repository';
+import { GenerateQrUseCase } from './application/use-cases/generate-qr.use-case';
+import { VerifyQrUseCase } from './application/use-cases/verify-qr.use-case';
+
 @Module({
   imports: [NotificationsModule],
   controllers: [DocumentsController],
   providers: [
+    // --- Puerto de persistencia de tokens QR (RF-8.3, RNF-08) ---
+    {
+      provide: QR_TOKEN_REPOSITORY_PORT,
+      useClass: PrismaQrTokenRepository,
+    },
+    {
+      provide: GenerateQrUseCase,
+      useFactory: (repo: QrTokenRepositoryPort, redis: RedisService) =>
+        new GenerateQrUseCase(repo, redis),
+      inject: [QR_TOKEN_REPOSITORY_PORT, RedisService],
+    },
+    {
+      provide: VerifyQrUseCase,
+      useFactory: (repo: QrTokenRepositoryPort, redis: RedisService) =>
+        new VerifyQrUseCase(repo, redis),
+      inject: [QR_TOKEN_REPOSITORY_PORT, RedisService],
+    },
+
+    // --- Fachada de aplicación ---
     DocumentsService,
+
     // --- Puerto de generación PDF ---
     {
       provide: RECEIPT_PDF_GENERATOR,
@@ -35,6 +64,7 @@ import { NotificationsService } from '../notifications/application/notifications
         new GenerateReceiptPdfUseCase(pdfGenerator),
       inject: [RECEIPT_PDF_GENERATOR],
     },
+
     // --- Puerto de persistencia de comprobantes ---
     {
       provide: RECEIPT_REPOSITORY_PORT,
@@ -46,6 +76,7 @@ import { NotificationsService } from '../notifications/application/notifications
         new RegisterReceiptUseCase(repo),
       inject: [RECEIPT_REPOSITORY_PORT],
     },
+
     // --- Reenvío de comprobantes con adjunto PDF (RF-8.5) ---
     {
       provide: ResendReceiptUseCase,
@@ -61,6 +92,12 @@ import { NotificationsService } from '../notifications/application/notifications
       ],
     },
   ],
-  exports: [DocumentsService, RegisterReceiptUseCase, ResendReceiptUseCase],
+  exports: [
+    DocumentsService,
+    RegisterReceiptUseCase,
+    ResendReceiptUseCase,
+    GenerateQrUseCase,
+    VerifyQrUseCase,
+  ],
 })
 export class DocumentsModule {}

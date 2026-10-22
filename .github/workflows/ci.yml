@@ -24,8 +24,14 @@ jobs:
       - name: Instalar Dependencias
         run: npm ci
 
+      - name: Compilar Contratos Compartidos
+        run: npm run build --workspace=@g10-m8/contracts
+
       - name: Generar Prisma Client
         run: npm run prisma:generate
+        env:
+          DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/m8_db?schema=public"
+          DIRECT_URL: "postgresql://postgres:postgres@localhost:5432/m8_db?schema=public"
 
       - name: Validar Formato y Linters
         run: npm run lint --if-present

@@ -58,6 +58,59 @@ docker compose up -d mailpit
 
 En el `.env`, configura `SMTP_HOST=localhost`, `SMTP_PORT=1025`, `SMTP_SECURE=false` y deja `SMTP_USER` y `SMTP_PASS` vacíos. Los mensajes enviados se pueden consultar en `http://localhost:8025`. Para usar otro servidor SMTP, reemplaza esos valores con la configuración correspondiente; con autenticación, configura ambos `SMTP_USER` y `SMTP_PASS`.
 
+#### Notificaciones al finalizar un viaje por RabbitMQ
+
+El backend consume eventos `trip.completed` desde el exchange durable `urban_mobility_events` y la cola durable `m8_notifications_queue`. Para desarrollo local, inicia RabbitMQ con el plugin de administración:
+
+```bash
+docker compose up -d rabbitmq
+```
+
+Verifica que `RABBITMQ_URL`, `RABBITMQ_EXCHANGE`, `RABBITMQ_QUEUE`, `RABBITMQ_EXCHANGE_TYPE=topic` y `RABBITMQ_TRIP_COMPLETED_ROUTING_KEY=trip.completed` coincidan con la configuración del broker. Inicia el backend después de RabbitMQ; el consumidor crea la cola y su binding al arrancar.
+
+Para probar un evento real desde PowerShell con el usuario/contraseña local predeterminados de RabbitMQ (`guest`/`guest`), publica en el exchange de administración:
+
+```powershell
+$event = @{
+  eventId = [guid]::NewGuid().ToString()
+  eventType = "trip.completed"
+  timestamp = [DateTime]::UtcNow.ToString("o")
+  version = "1.0"
+  data = @{
+    tripId = "trip-demo-1"
+    passengerId = "passenger-demo-1"
+    passengerEmail = "prueba@example.com"
+    driverId = "driver-demo-1"
+    driverName = "Ana"
+    totalFare = 4500.50
+    currency = "ARS"
+    origin = "Origen de prueba"
+    destination = "Destino de prueba"
+    completedAt = [DateTime]::UtcNow.ToString("o")
+  }
+}
+
+$publishBody = @{
+  properties = @{}
+  routing_key = "trip.completed"
+  payload = ($event | ConvertTo-Json -Depth 8 -Compress)
+  payload_encoding = "string"
+} | ConvertTo-Json -Depth 8
+
+$basicAuth = [Convert]::ToBase64String(
+  [Text.Encoding]::ASCII.GetBytes("guest:guest")
+)
+
+Invoke-RestMethod `
+  -Uri "http://localhost:15672/api/exchanges/%2F/urban_mobility_events/publish" `
+  -Method Post `
+  -Headers @{ Authorization = "Basic $basicAuth" } `
+  -ContentType "application/json" `
+  -Body $publishBody
+```
+
+La respuesta del API de administración debe indicar `routed: true`. En los logs del backend se verá que procesó el evento y, si Mailpit está activo y SMTP configurado, el correo aparecerá en `http://localhost:8025`. El envío se registra en `NotificationLog` si `DATABASE_URL` está configurado. Si no se dispone de Docker, se puede usar un RabbitMQ alcanzable configurando `RABBITMQ_URL` y apuntando a su consola de administración para publicar el evento.
+
 ### Paso 5: Generar el cliente de base de datos (Prisma)
 Una vez que tengas el `.env` con los datos de Supabase, ejecuta este comando para que TypeScript reconozca las tablas y modelos de la base de datos:
 ```bash

@@ -1,0 +1,194 @@
+import { ConsumeMessage, Channel, ChannelModel } from 'amqplib';
+import * as amqp from 'amqplib';
+import { NotificationsService } from '../../application/notifications.service';
+import { TripCompletedConsumer } from './trip-completed.consumer';
+
+describe('TripCompletedConsumer', () => {
+  const rabbitVariables = [
+    'RABBITMQ_URL',
+    'RABBITMQ_QUEUE',
+    'RABBITMQ_EXCHANGE',
+    'RABBITMQ_EXCHANGE_TYPE',
+    'RABBITMQ_TRIP_COMPLETED_ROUTING_KEY',
+  ];
+  const tripCompletedEvent = {
+    eventId: 'evt-trip-1',
+    eventType: 'trip.completed',
+    timestamp: '2026-10-22T14:00:00Z',
+    version: '1.0',
+    data: {
+      tripId: 'trip-123',
+      passengerId: 'passenger-1',
+      passengerEmail: 'pasajero@example.com',
+      driverId: 'driver-1',
+      driverName: 'Ana',
+      totalFare: 4500.5,
+      currency: 'ARS',
+      origin: 'Origen',
+      destination: 'Destino',
+      completedAt: '2026-10-22T13:59:00Z',
+    },
+  };
+
+  let originalEnvironment: Record<string, string | undefined>;
+  let connect: jest.SpyInstance;
+  let messageHandler: (message: ConsumeMessage | null) => void;
+  let assertExchange: jest.Mock;
+  let assertQueue: jest.Mock;
+  let bindQueue: jest.Mock;
+  let ack: jest.Mock;
+  let nack: jest.Mock;
+  let closeChannel: jest.Mock;
+  let closeConnection: jest.Mock;
+  let send: jest.Mock;
+  let consumer: TripCompletedConsumer;
+
+  const makeMessage = (payload: unknown): ConsumeMessage =>
+    ({
+      content: Buffer.from(JSON.stringify(payload)),
+      fields: {},
+      properties: {},
+    }) as ConsumeMessage;
+
+  beforeEach(() => {
+    originalEnvironment = Object.fromEntries(
+      rabbitVariables.map((name) => [name, process.env[name]]),
+    );
+    process.env.RABBITMQ_URL = 'amqp://localhost:5672';
+    process.env.RABBITMQ_QUEUE = 'notifications';
+    process.env.RABBITMQ_EXCHANGE = 'mobility.events';
+    process.env.RABBITMQ_EXCHANGE_TYPE = 'topic';
+    process.env.RABBITMQ_TRIP_COMPLETED_ROUTING_KEY = 'trip.completed';
+
+    assertExchange = jest.fn().mockResolvedValue(undefined);
+    assertQueue = jest.fn().mockResolvedValue(undefined);
+    bindQueue = jest.fn().mockResolvedValue(undefined);
+    ack = jest.fn();
+    nack = jest.fn();
+    closeChannel = jest.fn().mockResolvedValue(undefined);
+    closeConnection = jest.fn().mockResolvedValue(undefined);
+    const channel = {
+      assertExchange,
+      assertQueue,
+      bindQueue,
+      prefetch: jest.fn().mockResolvedValue(undefined),
+      consume: jest.fn().mockImplementation(
+        async (
+          _queue: string,
+          callback: (message: ConsumeMessage | null) => void,
+        ) => {
+          messageHandler = callback;
+          return { consumerTag: 'consumer-1' };
+        },
+      ),
+      ack,
+      nack,
+      close: closeChannel,
+    } as unknown as Channel;
+    const connection = {
+      createChannel: jest.fn().mockResolvedValue(channel),
+      on: jest.fn(),
+      close: closeConnection,
+    } as unknown as ChannelModel;
+    connect = jest
+      .spyOn(amqp, 'connect')
+      .mockResolvedValue(connection);
+    send = jest.fn().mockResolvedValue({
+      success: true,
+      id: 'notification-1',
+      status: 'SENT',
+    });
+    consumer = new TripCompletedConsumer({
+      send,
+    } as unknown as NotificationsService);
+  });
+
+  afterEach(async () => {
+    await consumer.onModuleDestroy();
+    connect.mockRestore();
+    rabbitVariables.forEach((name) => {
+      const value = originalEnvironment[name];
+      if (value === undefined) {
+        delete process.env[name];
+      } else {
+        process.env[name] = value;
+      }
+    });
+  });
+
+  it('binds the durable queue to trip.completed and sends a notification for the event', async () => {
+    await consumer.onModuleInit();
+    const message = makeMessage(tripCompletedEvent);
+
+    messageHandler(message);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(connect).toHaveBeenCalledWith('amqp://localhost:5672');
+    expect(assertExchange).toHaveBeenCalledWith('mobility.events', 'topic', {
+      durable: true,
+    });
+    expect(assertQueue).toHaveBeenCalledWith('notifications', {
+      durable: true,
+    });
+    expect(bindQueue).toHaveBeenCalledWith(
+      'notifications',
+      'mobility.events',
+      'trip.completed',
+    );
+    expect(send).toHaveBeenCalledWith({
+      channel: 'EMAIL',
+      recipient: 'pasajero@example.com',
+      subject: 'Viaje finalizado: trip-123',
+      content: expect.stringContaining('Total abonado:'),
+      referenceId: 'trip-123',
+      referenceType: 'TRIP',
+    });
+    expect(ack).toHaveBeenCalledWith(message);
+  });
+
+  it('rejects malformed events without requeueing them', async () => {
+    await consumer.onModuleInit();
+    const message = makeMessage({ eventType: 'trip.started' });
+
+    messageHandler(message);
+
+    expect(send).not.toHaveBeenCalled();
+    expect(nack).toHaveBeenCalledWith(message, false, false);
+  });
+
+  it('acknowledges the event after recording a failed delivery attempt', async () => {
+    send.mockResolvedValue({
+      success: false,
+      id: 'notification-failed',
+      status: 'FAILED',
+    });
+    await consumer.onModuleInit();
+    const message = makeMessage(tripCompletedEvent);
+
+    messageHandler(message);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(ack).toHaveBeenCalledWith(message);
+    expect(nack).not.toHaveBeenCalled();
+  });
+
+  it('requeues the event if sending or persisting the notification throws', async () => {
+    send.mockRejectedValue(new Error('Database unavailable'));
+    await consumer.onModuleInit();
+    const message = makeMessage(tripCompletedEvent);
+
+    messageHandler(message);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(nack).toHaveBeenCalledWith(message, false, true);
+    expect(ack).not.toHaveBeenCalled();
+  });
+
+  it('closes the RabbitMQ channel and connection during shutdown', async () => {
+    await consumer.onModuleInit();
+    await consumer.onModuleDestroy();
+
+    expect(closeChannel).toHaveBeenCalled();
+    expect(closeConnection).toHaveBeenCalled();
+  });
+});

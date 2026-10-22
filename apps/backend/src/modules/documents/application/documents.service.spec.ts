@@ -4,6 +4,8 @@ import { DocumentsService } from './documents.service';
 import { RedisService } from '../../../common/redis.service';
 import { PrismaService } from '../../../common/prisma.service';
 import { NotificationsService } from '../../notifications/application/notifications.service';
+import { RECEIPT_REPOSITORY_PORT } from '../domain/ports/receipt.repository.port';
+import { ResendReceiptUseCase } from './use-cases/resend-receipt.use-case';
 
 describe('DocumentsService - RF-8.3 Generador y Validador de QR', () => {
   let service: DocumentsService;
@@ -29,7 +31,11 @@ describe('DocumentsService - RF-8.3 Generador y Validador de QR', () => {
   const mockPrismaService = {
     qrVerificationToken: {
       create: jest.fn().mockImplementation(async ({ data }) => {
-        mockPrismaDb.set(data.token, { ...data, id: 'token-uuid-' + Date.now(), createdAt: new Date() });
+        mockPrismaDb.set(data.token, {
+          ...data,
+          id: 'token-uuid-' + Date.now(),
+          createdAt: new Date(),
+        });
         return mockPrismaDb.get(data.token);
       }),
       findUnique: jest.fn().mockImplementation(async ({ where }) => {
@@ -51,6 +57,15 @@ describe('DocumentsService - RF-8.3 Generador y Validador de QR', () => {
     send: jest.fn().mockResolvedValue({ success: true }),
   };
 
+  const mockReceiptRepo = {
+    findByTripId: jest.fn(),
+    create: jest.fn(),
+  };
+
+  const mockResendReceiptUseCase = {
+    execute: jest.fn(),
+  };
+
   beforeEach(async () => {
     mockRedisStorage.clear();
     mockPrismaDb.clear();
@@ -62,6 +77,8 @@ describe('DocumentsService - RF-8.3 Generador y Validador de QR', () => {
         { provide: RedisService, useValue: mockRedisService },
         { provide: PrismaService, useValue: mockPrismaService },
         { provide: NotificationsService, useValue: mockNotificationsService },
+        { provide: RECEIPT_REPOSITORY_PORT, useValue: mockReceiptRepo },
+        { provide: ResendReceiptUseCase, useValue: mockResendReceiptUseCase },
       ],
     }).compile();
 
@@ -91,14 +108,12 @@ describe('DocumentsService - RF-8.3 Generador y Validador de QR', () => {
       expect(result.ttlSeconds).toBe(300);
       expect(new Date(result.expiresAt).getTime()).toBeGreaterThan(Date.now());
 
-      // Verificar persistencia en Redis
       expect(mockRedisService.set).toHaveBeenCalledWith(
         `qr:${result.token}`,
         expect.stringContaining(result.token),
         300,
       );
 
-      // Verificar persistencia en Prisma / Supabase
       expect(mockPrismaService.qrVerificationToken.create).toHaveBeenCalledWith({
         data: expect.objectContaining({
           token: result.token,
@@ -126,7 +141,9 @@ describe('DocumentsService - RF-8.3 Generador y Validador de QR', () => {
     });
 
     it('debe funcionar con fallback si la base de datos no está disponible', async () => {
-      mockPrismaService.qrVerificationToken.create.mockRejectedValueOnce(new Error('Connection error'));
+      mockPrismaService.qrVerificationToken.create.mockRejectedValueOnce(
+        new Error('Connection error'),
+      );
 
       const dto = {
         tripId: 'trip-fallback',
@@ -159,7 +176,6 @@ describe('DocumentsService - RF-8.3 Generador y Validador de QR', () => {
       expect(verifyResult.token).toBe(generated.token);
       expect(verifyResult.verifiedAt).toBeDefined();
 
-      // Verificar que se actualizó isUsed en Prisma
       expect(mockPrismaService.qrVerificationToken.update).toHaveBeenCalledWith({
         where: { token: generated.token },
         data: expect.objectContaining({
@@ -168,7 +184,6 @@ describe('DocumentsService - RF-8.3 Generador y Validador de QR', () => {
         }),
       });
 
-      // Verificar que se eliminó de Redis para invalidación atómica
       expect(mockRedisService.del).toHaveBeenCalledWith(`qr:${generated.token}`);
     });
 
@@ -179,13 +194,11 @@ describe('DocumentsService - RF-8.3 Generador y Validador de QR', () => {
         ttlSeconds: 300,
       });
 
-      // Primer consumo exitoso
       await service.verifyQr({
         token: generated.token,
         tripId: 'trip-single-use',
       });
 
-      // Segundo consumo debe fallar con 410 Gone (un solo uso)
       await expect(
         service.verifyQr({
           token: generated.token,
@@ -195,13 +208,12 @@ describe('DocumentsService - RF-8.3 Generador y Validador de QR', () => {
     });
 
     it('debe rechazar con GoneException (410) si el token ya expiró', async () => {
-      // Simular token expirado en la base de datos
       const expiredToken = 'qr_trip-expired_abc123';
       mockPrismaDb.set(expiredToken, {
         token: expiredToken,
         tripId: 'trip-expired',
         passengerId: 'pass-100',
-        expiresAt: new Date(Date.now() - 60000), // Expiró hace 1 minuto
+        expiresAt: new Date(Date.now() - 60000),
         isUsed: false,
       });
 

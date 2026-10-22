@@ -4,17 +4,16 @@ import { NotificationsModule } from './modules/notifications/notifications.modul
 import { DocumentsModule } from './modules/documents/documents.module';
 import { SupportModule } from './modules/support/support.module';
 import { SimulatorModule } from './modules/simulator/simulator.module';
-import { PrismaService } from './common/prisma.service';
-import { RedisService } from './common/redis.service';
+import { CommonModule } from './common/common.module';
 
 @Module({
   imports: [
+    CommonModule,
     NotificationsModule,
     DocumentsModule,
     SupportModule,
     SimulatorModule,
   ],
   controllers: [HealthController],
-  providers: [PrismaService, RedisService],
 })
-export class AppModule { }
+export class AppModule {}

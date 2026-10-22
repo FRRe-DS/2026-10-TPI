@@ -1,11 +1,22 @@
-import { Injectable, Logger, NotFoundException, GoneException, BadRequestException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  NotFoundException,
+  GoneException,
+  BadRequestException,
+  Inject,
+} from '@nestjs/common';
 import { GenerateQrDto, VerifyQrDto, ResendReceiptDto } from './dto/documents.dto';
 import { RedisService } from '../../../common/redis.service';
 import { PrismaService } from '../../../common/prisma.service';
 import { NotificationsService } from '../../notifications/application/notifications.service';
-import { NotificationChannelDto } from '../../notifications/application/dto/send-notification.dto';
+import {
+  ReceiptRecord,
+  ReceiptRepositoryPort,
+  RECEIPT_REPOSITORY_PORT,
+} from '../domain/ports/receipt.repository.port';
+import { ResendReceiptUseCase } from './use-cases/resend-receipt.use-case';
 import * as QRCode from 'qrcode';
-import * as PDFDocument from 'pdfkit';
 import * as crypto from 'crypto';
 
 @Injectable()
@@ -16,17 +27,25 @@ export class DocumentsService {
     private readonly redis: RedisService,
     private readonly prisma: PrismaService,
     private readonly notificationsService: NotificationsService,
-  ) { }
+    @Inject(RECEIPT_REPOSITORY_PORT)
+    private readonly receiptRepo: ReceiptRepositoryPort,
+    private readonly resendReceiptUseCase: ResendReceiptUseCase,
+  ) {}
+
+  // ─── QR (RF-8.3 / RF-6.4) ───────────────────────────────────────────────────
 
   // Fallback en memoria en caso de desarrollo offline sin conexión a Supabase
-  private readonly memoryTokens = new Map<string, {
-    token: string;
-    tripId: string;
-    passengerId: string;
-    expiresAt: Date;
-    isUsed: boolean;
-    usedAt?: Date;
-  }>();
+  private readonly memoryTokens = new Map<
+    string,
+    {
+      token: string;
+      tripId: string;
+      passengerId: string;
+      expiresAt: Date;
+      isUsed: boolean;
+      usedAt?: Date;
+    }
+  >();
 
   async generateQr(dto: GenerateQrDto) {
     const ttl = dto.ttlSeconds || 300;
@@ -65,8 +84,10 @@ export class DocumentsService {
           isUsed: false,
         },
       });
-    } catch (err) {
-      this.logger.warn(`No se pudo persistir QrVerificationToken en base de datos: ${err.message}`);
+    } catch (err: any) {
+      this.logger.warn(
+        `No se pudo persistir QrVerificationToken en base de datos: ${err.message}`,
+      );
     }
 
     // 4. Renderizar código QR en base64 (DataURL)
@@ -91,23 +112,25 @@ export class DocumentsService {
     const token = dto.token?.trim();
     const tripId = dto.tripId?.trim();
 
-    // 1. Consultar en base de datos (Prisma / Supabase)
+    // 1. Consultar en Redis primero (caché de estado efímero y TTL)
+    const cached = token ? await this.redis.get(`qr:${token}`) : null;
+
+    // 2. Consultar en base de datos (Prisma / Supabase) para trazabilidad de uso/expiración
     let tokenRecord: any = null;
     try {
       tokenRecord = await this.prisma.qrVerificationToken.findUnique({
         where: { token },
       });
-    } catch (err) {
-      this.logger.warn(`Error consultando QrVerificationToken en base de datos: ${err.message}`);
+    } catch (err: any) {
+      this.logger.warn(
+        `Error consultando QrVerificationToken en base de datos: ${err.message}`,
+      );
     }
 
-    // 2. Si la base no respondió o no lo tiene, consultar memoria de respaldo
+    // 3. Si la base no respondió o no lo tiene, consultar memoria de respaldo
     if (!tokenRecord && token && this.memoryTokens.has(token)) {
       tokenRecord = this.memoryTokens.get(token);
     }
-
-    // 3. Consultar en Redis
-    const cached = token ? await this.redis.get(`qr:${token}`) : null;
 
     // Si no existe en ninguna fuente => 404 Not Found
     if (!tokenRecord && !cached) {
@@ -121,7 +144,9 @@ export class DocumentsService {
       }
 
       if (tokenRecord.isUsed) {
-        throw new GoneException('El código QR ya fue utilizado anteriormente (código de un solo uso consumido).');
+        throw new GoneException(
+          'El código QR ya fue utilizado anteriormente (código de un solo uso consumido).',
+        );
       }
 
       if (new Date() > new Date(tokenRecord.expiresAt)) {
@@ -159,7 +184,7 @@ export class DocumentsService {
           usedAt,
         },
       });
-    } catch (err) {
+    } catch (err: any) {
       this.logger.warn(`Error actualizando estado isUsed en base de datos: ${err.message}`);
     }
 
@@ -179,55 +204,18 @@ export class DocumentsService {
     };
   }
 
-  async generateReceiptPdfBuffer(data: {
-    tripId: string;
-    passengerEmail: string;
-    amount: number;
-    currency: string;
-    driverName?: string;
-  }): Promise<Buffer> {
-    return new Promise((resolve, reject) => {
-      const doc = new PDFDocument({ margin: 40 });
-      const buffers: Buffer[] = [];
+  // ─── Comprobantes (RF-8.4) ──────────────────────────────────────────────────
 
-      doc.on('data', (chunk) => buffers.push(chunk));
-      doc.on('end', () => resolve(Buffer.concat(buffers)));
-      doc.on('error', (err) => reject(err));
-
-      doc.fontSize(20).text('COMPROBANTE DE VIAJE', { align: 'center' });
-      doc.fontSize(10).text('Plataforma de Movilidad Urbana - Módulo 8', { align: 'center' });
-      doc.moveDown(2);
-
-      doc.fontSize(12).text(`ID de Viaje: ${data.tripId}`);
-      doc.text(`Fecha: ${new Date().toLocaleString()}`);
-      doc.text(`Pasajero: ${data.passengerEmail}`);
-      if (data.driverName) doc.text(`Conductor: ${data.driverName}`);
-      doc.moveDown();
-
-      doc.font('Helvetica-Bold').fontSize(14).text(`Total Abonado: ${data.currency} $${data.amount.toFixed(2)}`);
-      doc.moveDown(2);
-
-      doc.font('Helvetica').fontSize(9).fillColor('#555555').text('Comprobante digital oficial de viaje.', { align: 'center' });
-      doc.end();
-    });
+  /**
+   * Busca un comprobante existente por tripId.
+   * Utilizado por el controlador para la descarga (el GET no crea registros).
+   */
+  async findReceiptByTripId(tripId: string): Promise<ReceiptRecord | null> {
+    return this.receiptRepo.findByTripId(tripId);
   }
 
+  // ─── Reenvío (RF-8.5) ───────────────────────────────────────────────────────
   async resendReceipt(dto: ResendReceiptDto) {
-    this.logger.log(`Reenvío de comprobante para viaje ${dto.tripId} a ${dto.email}`);
-    await this.notificationsService.send({
-      channel: NotificationChannelDto.EMAIL,
-      recipient: dto.email,
-      subject: `Comprobante de Viaje #${dto.tripId}`,
-      content: `Estimado/a, adjuntamos el acceso a su comprobante oficial correspondiente al viaje #${dto.tripId}.`,
-      referenceId: dto.tripId,
-      referenceType: 'TRIP',
-    });
-
-    return {
-      success: true,
-      tripId: dto.tripId,
-      sentTo: dto.email,
-      timestamp: new Date().toISOString(),
-    };
+    return this.resendReceiptUseCase.execute(dto);
   }
 }

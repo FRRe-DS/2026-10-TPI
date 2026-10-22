@@ -1,3 +1,10 @@
+import * as dotenv from 'dotenv';
+import { resolve } from 'path';
+
+// Cargar variables de entorno desde la raíz del monorepo y/o directorio actual
+dotenv.config({ path: resolve(__dirname, '../../../.env') });
+dotenv.config();
+
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe, Logger } from '@nestjs/common';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';

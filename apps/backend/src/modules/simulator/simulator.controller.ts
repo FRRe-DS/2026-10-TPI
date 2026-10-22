@@ -2,6 +2,7 @@ import { Controller, Post, Body, Logger } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
 import { NotificationsService } from '../notifications/application/notifications.service';
 import { DocumentsService } from '../documents/application/documents.service';
+import { RegisterReceiptUseCase } from '../documents/application/use-cases/register-receipt.use-case';
 import { NotificationChannelDto } from '../notifications/application/dto/send-notification.dto';
 
 @ApiTags('Simulador de Eventos')
@@ -12,7 +13,8 @@ export class SimulatorController {
   constructor(
     private readonly notificationsService: NotificationsService,
     private readonly documentsService: DocumentsService,
-  ) { }
+    private readonly registerReceiptUseCase: RegisterReceiptUseCase,
+  ) {}
 
   @Post('trip-completed')
   @ApiOperation({ summary: 'Simular evento M6: Viaje Finalizado (TripCompletedEvent)' })
@@ -33,6 +35,16 @@ export class SimulatorController {
 
     this.logger.log(`[SIMULADOR] Evento recibido: trip.completed para viaje ${tripId}`);
 
+    // RF-8.4: Persistir metadatos del comprobante de viaje (idempotente)
+    const receipt = await this.registerReceiptUseCase.execute({
+      tripId,
+      passengerId: `usr-${tripId}`,
+      passengerEmail: email,
+      amount: fare,
+      currency: 'ARS',
+      driverName: driver,
+    });
+
     await this.notificationsService.send({
       channel: NotificationChannelDto.EMAIL,
       recipient: email,
@@ -46,6 +58,7 @@ export class SimulatorController {
       simulated: true,
       event: 'trip.completed',
       tripId,
+      receiptCode: receipt.receiptCode,
       notificationSentTo: email,
       timestamp: new Date().toISOString(),
     };

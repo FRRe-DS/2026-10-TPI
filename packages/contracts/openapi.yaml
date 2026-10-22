@@ -87,10 +87,69 @@ paths:
         '410':
           description: Token QR expirado (TTL vencido)
 
+  /documents/receipts:
+    post:
+      summary: Registrar comprobante de viaje (RF-8.4)
+      operationId: registerReceipt
+      description: >
+        Persiste los metadatos del comprobante en base de datos.
+        Idempotente: si ya existe un comprobante para el tripId devuelve el existente
+        sin crear un duplicado. El PDF se genera on-demand en el endpoint de descarga.
+      tags:
+        - Documentos y QR
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterReceiptDto'
+      responses:
+        '201':
+          description: Comprobante registrado (o existente devuelto si ya había uno para el tripId)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReceiptResponseDto'
+        '400':
+          description: Datos de entrada inválidos
+
+  /documents/receipts/{tripId}/download:
+    get:
+      summary: Descargar comprobante de viaje en PDF (RF-8.4)
+      operationId: downloadReceiptPdf
+      description: >
+        Busca el comprobante registrado para el tripId y regenera el PDF
+        con los datos originales (conservando la fecha de emisión real).
+        No crea ni modifica registros. Devuelve 404 si no existe comprobante.
+      tags:
+        - Documentos y QR
+      parameters:
+        - name: tripId
+          in: path
+          required: true
+          description: ID del viaje cuyo comprobante se desea descargar
+          schema:
+            type: string
+            example: trip-abc-123
+      responses:
+        '200':
+          description: PDF generado y servido como archivo adjunto
+          content:
+            application/pdf:
+              schema:
+                type: string
+                format: binary
+        '404':
+          description: No existe comprobante registrado para este viaje
+
   /documents/receipts/resend:
     post:
       summary: Reenviar comprobante PDF por correo electrónico (RF-8.5)
       operationId: resendReceipt
+      description: >
+        Busca el comprobante registrado para el tripId, regenera el PDF con los
+        datos y fecha originales, y lo envía como archivo adjunto al correo indicado.
+        Devuelve 404 si el comprobante no existe y 502 si falla el envío de correo.
       tags:
         - Documentos y QR
       requestBody:
@@ -102,8 +161,17 @@ paths:
       responses:
         '200':
           description: Comprobante reenviado exitosamente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResendReceiptResponseDto'
+        '400':
+          description: Datos de entrada inválidos
         '404':
-          description: Comprobante no encontrado
+          description: Comprobante no encontrado para el tripId indicado
+        '502':
+          description: Error al enviar el correo electrónico (falla SMTP)
+
 
   /notifications/logs:
     get:
@@ -199,10 +267,70 @@ paths:
 
 components:
   schemas:
+    RegisterReceiptDto:
+      type: object
+      required:
+        - tripId
+        - passengerId
+        - passengerEmail
+        - amount
+      properties:
+        tripId:
+          type: string
+          example: "trip-abc-123"
+          description: "ID del viaje finalizado (viene de TripCompletedEvent de M6)"
+        passengerId:
+          type: string
+          example: "usr-p-456"
+        passengerEmail:
+          type: string
+          format: email
+          example: "pasajero@ejemplo.com"
+        amount:
+          type: number
+          format: float
+          example: 3500.00
+        currency:
+          type: string
+          default: ARS
+          example: "ARS"
+        driverName:
+          type: string
+          example: "Juan Conductor"
+
+    ReceiptResponseDto:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        receiptCode:
+          type: string
+          example: "REC-2026-00001"
+        tripId:
+          type: string
+        passengerId:
+          type: string
+        passengerEmail:
+          type: string
+          format: email
+        amount:
+          type: number
+        currency:
+          type: string
+        driverName:
+          type: string
+          nullable: true
+        issuedAt:
+          type: string
+          format: date-time
+          description: "Fecha de emisión original del comprobante"
+
     GenerateQrDto:
       type: object
       required:
         - tripId
+
         - passengerId
       properties:
         tripId:
@@ -248,9 +376,32 @@ components:
       properties:
         tripId:
           type: string
+          example: "trip-abc-123"
         email:
           type: string
           format: email
+          example: "pasajero@ejemplo.com"
+
+    ResendReceiptResponseDto:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        tripId:
+          type: string
+          example: "trip-abc-123"
+        receiptCode:
+          type: string
+          example: "REC-2026-00001"
+        sentTo:
+          type: string
+          format: email
+          example: "pasajero@ejemplo.com"
+        timestamp:
+          type: string
+          format: date-time
+
 
     NotificationLogDto:
       type: object

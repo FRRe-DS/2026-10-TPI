@@ -7,6 +7,12 @@ export enum NotificationChannelDto {
   SMS = 'SMS',
 }
 
+export interface NotificationAttachmentDto {
+  filename: string;
+  content: Buffer | Uint8Array;
+  contentType?: string;
+}
+
 export class SendNotificationDto {
   @ApiProperty({ enum: NotificationChannelDto, default: NotificationChannelDto.EMAIL })
   @IsEnum(NotificationChannelDto)
@@ -36,4 +42,7 @@ export class SendNotificationDto {
   @IsString()
   @IsOptional()
   referenceType?: string;
+
+  @IsOptional()
+  attachments?: NotificationAttachmentDto[];
 }

@@ -95,6 +95,75 @@ npm run docker:logs
 # Detener todos los contenedores preservando datos en volúmenes
 npm run docker:down
 
-# Sincronizar esquema de base de datos local
+# Sincronizar esquema de base de datos local o remota
+npm run prisma:push
 npm run prisma:migrate
 ```
+
+---
+
+## 5. Empaquetado OCI y Dockerfile Multi-Stage (RNF-04)
+
+Cumpliendo con **RNF-04**, el microservicio M8 Backend se empaqueta en una imagen de contenedor OCI reproducible, basada en `node:20-alpine`, utilizando una estrategia multi-etapa (`multi-stage build`):
+
+1. **Etapa `builder`**:
+   - Instala dependencias con `npm ci`.
+   - Genera el cliente tipado de Prisma (`prisma generate`).
+   - Compila el paquete interno `@g10-m8/contracts` y el microservicio `@g10-m8/backend` (`nest build`).
+2. **Etapa `runner`**:
+   - Parte de una imagen limpia y minimalista `node:20-alpine`.
+   - Copia únicamente los artefactos compilados (`dist/`), `node_modules` y esquemas de Prisma.
+   - Configura el usuario seguro sin privilegios `USER node`.
+   - Expone el puerto `3000` y define un `HEALTHCHECK` activo contra `/api/v1/health`.
+
+### Comandos de Construcción y Ejecución de la Imagen
+
+```bash
+# Construir la imagen del backend
+docker build -t g10-m8-backend:latest .
+
+# Ejecutar el contenedor
+docker run -p 3000:3000 --env-file apps/backend/.env g10-m8-backend:latest
+```
+
+---
+
+## 6. Esquema de Datos, Migraciones y Supabase Cloud (RNF-05)
+
+El microservicio es el propietario exclusivo (**RNF-05**) de las siguientes 5 entidades de dominio:
+
+1. **`NotificationLog`**: Bitácora auditable de cada notificación enviada (Email, SMS, Push, WhatsApp), estado del delivery (`PENDING`, `SENT`, `FAILED`), destinatario y reintentos.
+2. **`DocumentReceipt`**: Comprobante oficial de viaje emitido con `receiptCode` alfanumérico único (`REC-2026-XXXXXX`), datos del viaje (`tripId`, `passengerId`, `driverId`, monto, fecha) y URL/hash del PDF.
+3. **`QrVerificationToken`**: Token criptográfico para validación de acceso al viaje con control de expiración (`expiresAt`) y consumo único (`used`).
+4. **`SupportTicket`**: Incidencias y reclamos de pasajeros y conductores con código `TCK-2026-XXXXXX`, categorización, prioridad y máquina de estados (`OPEN`, `IN_PROGRESS`, `RESOLVED`, `CLOSED`).
+5. **`TicketMessage`**: Mensajes cronológicos y auditoría asociados a cada ticket de soporte.
+
+### Trazabilidad de Esquema y Migraciones SQL
+
+La estructura de la base de datos se mantiene versionada formalmente en:
+- `apps/backend/prisma/schema.prisma`: Definición declarativa de modelos y relaciones.
+- `apps/backend/prisma/migrations/20261022000000_init/migration.sql`: Migración DDL inicial para PostgreSQL.
+- `apps/backend/prisma/migrations/migration_lock.toml`: Bloqueo de proveedor (`postgresql`).
+
+Para desplegar y sincronizar:
+```bash
+# Sincronización declarativa directa (entornos de desarrollo / Supabase)
+npm run prisma:push
+
+# Aplicar migraciones SQL pendientes (producción / CI-CD)
+npx prisma migrate deploy --schema=apps/backend/prisma/schema.prisma
+```
+
+---
+
+## 7. Pipeline de Integración Continua (RNF-07, CI)
+
+El repositorio cuenta con un pipeline automatizado de GitHub Actions configurado en [`.github/workflows/ci.yml`](.github/workflows/ci.yml) que valida en cada `push` o `pull_request` a `main` y `develop`:
+
+1. **Instalación limpia de dependencias** (`npm ci`).
+2. **Generación automática de Prisma Client** (`npm run prisma:generate`) para garantizar tipado estático en el runner.
+3. **Validación estricta de linters y TypeScript** (`npm run lint` / `tsc --noEmit`).
+4. **Ejecución del 100% de la suite de pruebas unitarias y de integración** (`npm run test`).
+5. **Compilación de todos los workspaces** (`npm run build`).
+6. **Validación de reproducibilidad del contenedor Docker** (`docker build -t g10-m8-backend:test .`).
+

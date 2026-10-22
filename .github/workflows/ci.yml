@@ -24,6 +24,9 @@ jobs:
       - name: Instalar Dependencias
         run: npm ci
 
+      - name: Generar Prisma Client
+        run: npm run prisma:generate
+
       - name: Validar Formato y Linters
         run: npm run lint --if-present
 
@@ -32,3 +35,6 @@ jobs:
 
       - name: Compilar Workspaces
         run: npm run build
+
+      - name: Validar Docker Build
+        run: docker build -t g10-m8-backend:test .

@@ -1,4 +1,7 @@
-version: '3.8'
+# ========================================================
+# Plataforma Distribuida de Movilidad Urbana - Grupo 10 (M8)
+# Infraestructura Local de Dependencias y Persistencia (RNF-04)
+# ========================================================
 
 services:
   # Base de Datos PostgreSQL local (para quienes desarrollen sin conexión a Supabase)

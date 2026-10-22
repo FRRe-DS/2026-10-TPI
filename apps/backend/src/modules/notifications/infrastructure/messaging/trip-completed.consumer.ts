@@ -2,8 +2,8 @@ import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/commo
 import type { TripCompletedEvent } from '@g10-m8/contracts';
 import { isEmail } from 'class-validator';
 import {
-  Channel,
   ChannelModel,
+  ConfirmChannel,
   ConsumeMessage,
 } from 'amqplib';
 import * as amqp from 'amqplib';
@@ -14,7 +14,11 @@ import { NotificationChannelDto } from '../../application/dto/send-notification.
 export class TripCompletedConsumer implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(TripCompletedConsumer.name);
   private connection: ChannelModel | null = null;
-  private channel: Channel | null = null;
+  private channel: ConfirmChannel | null = null;
+  private retryQueue = '';
+  private failedQueue = '';
+  private maxRetries = 3;
+  private retryDelayMs = 30000;
 
   constructor(private readonly notificationsService: NotificationsService) {}
 
@@ -25,6 +29,18 @@ export class TripCompletedConsumer implements OnModuleInit, OnModuleDestroy {
     const exchangeType = process.env.RABBITMQ_EXCHANGE_TYPE || 'topic';
     const routingKey =
       process.env.RABBITMQ_TRIP_COMPLETED_ROUTING_KEY || 'trip.completed';
+    this.retryQueue = `${queue}.retry`;
+    this.failedQueue = `${queue}.failed`;
+    this.maxRetries = this.readPositiveInteger(
+      process.env.RABBITMQ_NOTIFICATION_MAX_RETRIES,
+      3,
+      'RABBITMQ_NOTIFICATION_MAX_RETRIES',
+    );
+    this.retryDelayMs = this.readPositiveInteger(
+      process.env.RABBITMQ_NOTIFICATION_RETRY_DELAY_MS,
+      30000,
+      'RABBITMQ_NOTIFICATION_RETRY_DELAY_MS',
+    );
 
     try {
       this.connection = await amqp.connect(url);
@@ -32,11 +48,20 @@ export class TripCompletedConsumer implements OnModuleInit, OnModuleDestroy {
         this.logger.error(`Error de conexión RabbitMQ: ${error.message}`);
       });
 
-      this.channel = await this.connection.createChannel();
+      this.channel = await this.connection.createConfirmChannel();
       await this.channel.assertExchange(exchange, exchangeType, {
         durable: true,
       });
       await this.channel.assertQueue(queue, { durable: true });
+      await this.channel.assertQueue(this.retryQueue, {
+        durable: true,
+        arguments: {
+          'x-message-ttl': this.retryDelayMs,
+          'x-dead-letter-exchange': exchange,
+          'x-dead-letter-routing-key': routingKey,
+        },
+      });
+      await this.channel.assertQueue(this.failedQueue, { durable: true });
       await this.channel.bindQueue(queue, exchange, routingKey);
       await this.channel.prefetch(1);
       await this.channel.consume(
@@ -72,12 +97,12 @@ export class TripCompletedConsumer implements OnModuleInit, OnModuleDestroy {
     try {
       event = JSON.parse(message.content.toString('utf8'));
     } catch (error) {
-      this.rejectMalformedMessage(message, 'el contenido no es JSON válido');
+      await this.rejectMalformedMessage(message, 'el contenido no es JSON válido');
       return;
     }
 
     if (!this.isTripCompletedEvent(event)) {
-      this.rejectMalformedMessage(
+      await this.rejectMalformedMessage(
         message,
         'el payload no cumple el contrato trip.completed',
       );
@@ -105,25 +130,43 @@ export class TripCompletedConsumer implements OnModuleInit, OnModuleDestroy {
         content,
         referenceId: data.tripId,
         referenceType: 'TRIP',
-      });
+      }, event.eventId, this.getRetryCount(message) > 0);
 
-      if (result.success) {
+      if (
+        result.success ||
+        (result.status === 'FAILED' && !result.retryable)
+      ) {
+        if (result.duplicate && result.success) {
+          this.logger.log(
+            `Evento ${event.eventId} ya procesado; se omite el envío duplicado`,
+          );
+        } else if (result.success) {
         this.logger.log(
           `Evento ${event.eventId} procesado; notificación ${result.id} enviada`,
         );
-      } else {
-        this.logger.warn(
-          `Evento ${event.eventId} procesado; intento de notificación registrado como FAILED`,
-        );
+        } else {
+          this.logger.error(
+            `Evento ${event.eventId}: notificación no reintentable registrada como FAILED`,
+          );
+        }
+        this.channel?.ack(message);
+        return;
       }
-      this.channel?.ack(message);
+
+      await this.retryOrFail(
+        message,
+        event.eventId,
+        result.status === 'PENDING'
+          ? 'notificación en procesamiento por una entrega concurrente'
+          : 'proveedor de notificaciones no disponible',
+      );
     } catch (error) {
       const details = error instanceof Error ? error.message : String(error);
       this.logger.error(
-        `No se pudo procesar el evento ${event.eventId}; se reencolará: ${details}`,
+        `No se pudo procesar el evento ${event.eventId}: ${details}`,
         error instanceof Error ? error.stack : undefined,
       );
-      this.channel?.nack(message, false, true);
+      await this.retryOrFail(message, event.eventId, details);
     }
   }
 
@@ -159,12 +202,99 @@ export class TripCompletedConsumer implements OnModuleInit, OnModuleDestroy {
     );
   }
 
-  private rejectMalformedMessage(
+  private async rejectMalformedMessage(
     message: ConsumeMessage,
     reason: string,
-  ): void {
+  ): Promise<void> {
     this.logger.error(`Evento RabbitMQ rechazado: ${reason}`);
-    this.channel?.nack(message, false, false);
+    try {
+      await this.publishToQueue(this.failedQueue, message, {
+        'x-failure-reason': reason,
+      });
+      this.channel?.ack(message);
+    } catch (error) {
+      this.logger.error('No se pudo preservar el evento inválido en la cola de fallos.');
+      this.channel?.nack(message, false, true);
+    }
+  }
+
+  private async retryOrFail(
+    message: ConsumeMessage,
+    eventId: string,
+    reason: string,
+  ): Promise<void> {
+    const retryCount = this.getRetryCount(message);
+    const nextRetryCount = retryCount + 1;
+
+    try {
+      if (retryCount < this.maxRetries) {
+        await this.publishToQueue(this.retryQueue, message, {
+          'x-notification-retry-count': nextRetryCount,
+        });
+        this.logger.warn(
+          `Evento ${eventId} programado para reintento ${nextRetryCount}/${this.maxRetries} en ${this.retryDelayMs} ms: ${reason}`,
+        );
+      } else {
+        await this.publishToQueue(this.failedQueue, message, {
+          'x-notification-retry-count': retryCount,
+          'x-failure-reason': reason,
+        });
+        this.logger.error(
+          `Evento ${eventId} agotó ${this.maxRetries} reintentos; quedó en ${this.failedQueue}`,
+        );
+      }
+      this.channel?.ack(message);
+    } catch (error) {
+      const details = error instanceof Error ? error.message : String(error);
+      this.logger.error(
+        `No se pudo guardar el reintento del evento ${eventId}: ${details}`,
+      );
+      this.channel?.nack(message, false, true);
+    }
+  }
+
+  private async publishToQueue(
+    queue: string,
+    message: ConsumeMessage,
+    additionalHeaders: Record<string, string | number>,
+  ): Promise<void> {
+    if (!this.channel) {
+      throw new Error('El canal RabbitMQ no está disponible.');
+    }
+    this.channel.sendToQueue(queue, message.content, {
+      persistent: true,
+      contentType: message.properties.contentType,
+      contentEncoding: message.properties.contentEncoding,
+      correlationId: message.properties.correlationId,
+      messageId: message.properties.messageId,
+      headers: {
+        ...message.properties.headers,
+        ...additionalHeaders,
+      },
+    });
+    await this.channel.waitForConfirms();
+  }
+
+  private getRetryCount(message: ConsumeMessage): number {
+    const value = message.properties.headers?.['x-notification-retry-count'];
+    return typeof value === 'number' && Number.isInteger(value) && value >= 0
+      ? value
+      : 0;
+  }
+
+  private readPositiveInteger(
+    value: string | undefined,
+    defaultValue: number,
+    name: string,
+  ): number {
+    if (value === undefined) {
+      return defaultValue;
+    }
+    const parsed = Number(value);
+    if (!Number.isInteger(parsed) || parsed < 1) {
+      throw new Error(`${name} debe ser un entero mayor a cero.`);
+    }
+    return parsed;
   }
 
   private async closeConnection(): Promise<void> {

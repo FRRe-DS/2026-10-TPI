@@ -66,7 +66,14 @@ El backend consume eventos `trip.completed` desde el exchange durable `urban_mob
 docker compose up -d rabbitmq
 ```
 
-Verifica que `RABBITMQ_URL`, `RABBITMQ_EXCHANGE`, `RABBITMQ_QUEUE`, `RABBITMQ_EXCHANGE_TYPE=topic` y `RABBITMQ_TRIP_COMPLETED_ROUTING_KEY=trip.completed` coincidan con la configuración del broker. Inicia el backend después de RabbitMQ; el consumidor crea la cola y su binding al arrancar.
+Verifica que `RABBITMQ_URL`, `RABBITMQ_EXCHANGE`, `RABBITMQ_QUEUE`, `RABBITMQ_EXCHANGE_TYPE=topic` y `RABBITMQ_TRIP_COMPLETED_ROUTING_KEY=trip.completed` coincidan con la configuración del broker. El consumidor crea una cola de reintentos con TTL; `RABBITMQ_NOTIFICATION_MAX_RETRIES` (3 por defecto) y `RABBITMQ_NOTIFICATION_RETRY_DELAY_MS` (30 segundos por defecto) controlan los reintentos. Mantén estable el TTL si la cola retry ya fue creada. Inicia el backend después de RabbitMQ; el consumidor crea las colas y bindings al arrancar.
+
+Cada evento se deduplica por `eventId` en `NotificationLog`. Antes de probar, aplica el nuevo campo del schema a la base configurada y regenera Prisma:
+
+```bash
+npx prisma db push --schema=apps/backend/prisma/schema.prisma
+npm run prisma:generate --workspace=apps/backend
+```
 
 Para probar un evento real desde PowerShell con el usuario/contraseña local predeterminados de RabbitMQ (`guest`/`guest`), publica en el exchange de administración:
 
@@ -109,7 +116,9 @@ Invoke-RestMethod `
   -Body $publishBody
 ```
 
-La respuesta del API de administración debe indicar `routed: true`. En los logs del backend se verá que procesó el evento y, si Mailpit está activo y SMTP configurado, el correo aparecerá en `http://localhost:8025`. El envío se registra en `NotificationLog` si `DATABASE_URL` está configurado. Si no se dispone de Docker, se puede usar un RabbitMQ alcanzable configurando `RABBITMQ_URL` y apuntando a su consola de administración para publicar el evento.
+La respuesta del API de administración debe indicar `routed: true`. En los logs del backend se verá que procesó el evento y, si Mailpit está activo y SMTP configurado, el correo aparecerá en `http://localhost:8025`. Si el proveedor falla, el mismo evento se reintentará con demora; al agotar los intentos, el mensaje queda en `m8_notifications_queue.failed` y el log en `NotificationLog` queda en `FAILED`. Una nueva publicación con el mismo `eventId` reintenta el registro fallido; los eventos ya registrados como `SENT` no generan otro email. Si no se dispone de Docker, se puede usar un RabbitMQ alcanzable configurando `RABBITMQ_URL` y apuntando a su consola de administración para publicar el evento.
+
+El canal `SMS` todavía no tiene proveedor implementado y queda registrado como `FAILED`, sin reintentos automáticos ni marcarse como enviado. SMTP no ofrece entrega exactamente una vez: si el servidor acepta el correo y la conexión se pierde antes de confirmar el resultado, un reintento podría entregar un duplicado. El `Message-ID` estable y la deduplicación evitan duplicados en redeliveries confirmadas, pero no pueden eliminar esa limitación del protocolo.
 
 ### Paso 5: Generar el cliente de base de datos (Prisma)
 Una vez que tengas el `.env` con los datos de Supabase, ejecuta este comando para que TypeScript reconozca las tablas y modelos de la base de datos:

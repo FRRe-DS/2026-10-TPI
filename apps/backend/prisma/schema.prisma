@@ -28,6 +28,7 @@ enum NotificationStatus {
 
 model NotificationLog {
   id            String              @id @default(uuid())
+  eventId       String?             @unique
   channel       NotificationChannel @default(EMAIL)
   recipient     String
   subject       String

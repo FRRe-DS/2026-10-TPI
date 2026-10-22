@@ -524,12 +524,14 @@ paths:
         - name: referenceId
           in: query
           required: false
+          description: Filtrar por identificador de la entidad asociada (viaje, reserva o pago)
           schema:
             type: string
             example: trip-9082
         - name: status
           in: query
           required: false
+          description: Filtrar por estado del ticket
           schema:
             type: string
             enum: [OPEN, IN_PROGRESS, RESOLVED, CLOSED]
@@ -556,17 +558,18 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponseDto'
 
-  /support/tickets/{id}:
+  /support/tickets/{ticketId}:
     get:
       summary: Obtener detalle de un ticket de soporte (RF-8.7)
+      description: Devuelve el ticket identificado por su UUID o por su ticketNumber (ej. TCK-2026-A1B2C3).
       operationId: getTicketById
       tags:
         - Soporte y Tickets
       parameters:
-        - name: id
+        - name: ticketId
           in: path
           required: true
-          description: ID único o ticketNumber del ticket
+          description: ID único (UUID) o ticketNumber del ticket
           schema:
             type: string
             example: tck-uuid-5001
@@ -590,17 +593,22 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponseDto'
 
-  /support/tickets/{id}/status:
+  /support/tickets/{ticketId}/status:
     patch:
       summary: Actualizar estado y resolución de un ticket (RF-8.7)
-      description: Permite transicionar el estado del ticket (OPEN, IN_PROGRESS, RESOLVED, CLOSED).
+      description: |
+        Transiciona el estado del ticket siguiendo estrictamente la secuencia
+        `OPEN -> IN_PROGRESS -> RESOLVED -> CLOSED`.
+        No se permiten saltos de estado, retrocesos ni repetir el estado actual.
+        `CLOSED` es un estado final: un ticket cerrado no puede reabrirse ni modificarse (400).
       operationId: updateTicketStatus
       tags:
         - Soporte y Tickets
       parameters:
-        - name: id
+        - name: ticketId
           in: path
           required: true
+          description: ID único (UUID) o ticketNumber del ticket
           schema:
             type: string
             example: tck-uuid-5001
@@ -621,7 +629,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/TicketResponseDto'
         '400':
-          description: Transición de estado inválida
+          description: Transición de estado inválida o ticket CLOSED (no puede reabrirse)
           content:
             application/json:
               schema:
@@ -979,7 +987,7 @@ components:
           example: tck-uuid-5001
         ticketNumber:
           type: string
-          example: TCK-2026-1001
+          example: TCK-2026-A1B2C3
         referenceId:
           type: string
           example: trip-9082

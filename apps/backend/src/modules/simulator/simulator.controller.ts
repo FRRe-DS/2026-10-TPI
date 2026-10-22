@@ -97,4 +97,45 @@ export class SimulatorController {
       recipient: email,
     };
   }
+
+  @Post('payment-captured')
+  @ApiOperation({ summary: 'Simular evento M7: Pago Exitoso (PaymentCapturedEvent)' })
+  async simulatePaymentCaptured(
+    @Body()
+    body: {
+      paymentId: string;
+      tripId?: string;
+      userEmail: string;
+      amount: number;
+      paymentMethod: string;
+    },
+  ) {
+    const payId = body.paymentId || `pay-${Date.now()}`;
+    const email = body.userEmail || 'pasajero.pago@movilidad.com';
+    const amount = body.amount || 3850.0;
+    const method = body.paymentMethod || 'MERCADOPAGO';
+    const tripId = body.tripId || `trip-${Math.floor(1000 + Math.random() * 9000)}`;
+
+    this.logger.log(`[SIMULADOR] Evento recibido: payment.captured para pago ${payId}`);
+
+    await this.notificationsService.send({
+      channel: NotificationChannelDto.EMAIL,
+      recipient: email,
+      subject: `Confirmación de Pago #${payId}`,
+      content: `Tu pago de $${amount} ARS mediante ${method} fue procesado exitosamente para el servicio #${tripId}.`,
+      referenceId: payId,
+      referenceType: 'PAYMENT',
+    });
+
+    return {
+      simulated: true,
+      event: 'payment.captured',
+      paymentId: payId,
+      tripId,
+      amount,
+      paymentMethod: method,
+      recipient: email,
+      timestamp: new Date().toISOString(),
+    };
+  }
 }

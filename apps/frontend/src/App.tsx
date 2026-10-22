@@ -91,6 +91,13 @@ export default function App() {
     origin: 'Av. Sarmiento 1200',
     destination: 'Aeropuerto Internacional',
   });
+  const [simPayment, setSimPayment] = useState({
+    paymentId: 'pay-sim-7740',
+    tripId: 'trip-sim-5501',
+    userEmail: 'pasajero.pago@ejemplo.com',
+    amount: 3850,
+    paymentMethod: 'MERCADOPAGO',
+  });
 
   // ─── Healthcheck inicial ───────────────────────────────────────────────────────
   const checkHealth = useCallback(() => {
@@ -425,6 +432,28 @@ export default function App() {
       fetchNotifications();
     } catch {
       setSimulationLog((prev) => [`[${new Date().toLocaleTimeString()}] Error de red al simular evento reservation.confirmed`, ...prev]);
+    }
+  };
+
+  const handleSimulatePaymentCaptured = async () => {
+    const payId = simPayment.paymentId || `pay-${Date.now()}`;
+    try {
+      await fetch(`${API_BASE}/simulator/payment-captured`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          paymentId: payId,
+          tripId: simPayment.tripId,
+          userEmail: simPayment.userEmail,
+          amount: simPayment.amount,
+          paymentMethod: simPayment.paymentMethod,
+        }),
+      });
+      const logEntry = `[${new Date().toLocaleTimeString()}] Evento 'payment.captured' #${payId} -> Notificación de cobro por $${simPayment.amount} enviada a ${simPayment.userEmail}`;
+      setSimulationLog((prev) => [logEntry, ...prev]);
+      fetchNotifications();
+    } catch {
+      setSimulationLog((prev) => [`[${new Date().toLocaleTimeString()}] Error de red al simular evento payment.captured`, ...prev]);
     }
   };
 
@@ -1289,7 +1318,7 @@ export default function App() {
                 Dispara eventos simulados que imitan los mensajes de RabbitMQ provenientes de los módulos externos para probar el pipeline completo de M8 en tiempo real.
               </p>
 
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px', marginBottom: '24px' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '20px', marginBottom: '24px' }}>
                 {/* Evento M6 */}
                 <div style={{ padding: '16px', background: 'rgba(0,0,0,0.2)', borderRadius: '12px', border: '1px solid var(--border-color)' }}>
                   <div style={{ fontWeight: 600, color: '#6366f1', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '6px' }}>
@@ -1313,6 +1342,33 @@ export default function App() {
                     />
                     <button className="btn btn-primary" onClick={handleSimulateTripCompleted}>
                       <PlayCircle size={16} /> Disparar trip.completed
+                    </button>
+                  </div>
+                </div>
+
+                {/* Evento M7 */}
+                <div style={{ padding: '16px', background: 'rgba(0,0,0,0.2)', borderRadius: '12px', border: '1px solid var(--border-color)' }}>
+                  <div style={{ fontWeight: 600, color: '#10b981', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <PlayCircle size={16} /> M7: Pago Capturado (payment.captured)
+                  </div>
+                  <p style={{ fontSize: '12px', color: '#9ca3af', marginBottom: '14px' }}>
+                    Notifica acreditación de cobro por pasarela/tarifa y registra ticket con tipo PAYMENT.
+                  </p>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                    <input
+                      className="form-input"
+                      placeholder="paymentId"
+                      value={simPayment.paymentId}
+                      onChange={(e) => setSimPayment({ ...simPayment, paymentId: e.target.value })}
+                    />
+                    <input
+                      className="form-input"
+                      placeholder="Email Pasajero"
+                      value={simPayment.userEmail}
+                      onChange={(e) => setSimPayment({ ...simPayment, userEmail: e.target.value })}
+                    />
+                    <button className="btn btn-primary" onClick={handleSimulatePaymentCaptured}>
+                      <PlayCircle size={16} /> Disparar payment.captured
                     </button>
                   </div>
                 </div>

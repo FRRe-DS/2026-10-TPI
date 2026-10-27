@@ -2,642 +2,928 @@ openapi: 3.1.0
 info:
   title: DS 2026 API - Módulo 8 (Notificaciones, Documentos y Soporte)
   description: |
-    API REST oficial de M8: Notificaciones, Documentos y Soporte.
-    Plataforma Distribuida de Movilidad Urbana - Cátedra Desarrollo de Software 2026 (Grupo 10).
+    API unificada oficial de M8: Notificaciones, Documentos y Soporte.
+    Plataforma Distribuida de Movilidad Urbana - Cátedra Desarrollo de Software 2026.
+    Contrato consolidado y acordado formalmente entre el Grupo 10 y el Grupo 7.
 
-    Responsabilidades principales:
-    - RF-8.1 y RF-8.2: Envío síncrono de notificaciones y avisos multicanal (Email, SMS, Push).
-    - RF-8.3: Generación de códigos QR temporales de un solo uso con expiración y TTL en Redis para validación de inicio de viaje (coordinación con M6).
-    - RF-8.4 y RF-8.5: Emisión de comprobantes de pago/viaje en formato PDF, descarga oficial y reenvío por correo electrónico con adjunto (coordinación con M6 y M7).
-    - RF-8.6: Trazabilidad, auditoría y consulta del historial de entrega de notificaciones.
-    - RF-8.7: Gestión de tickets de soporte técnico asociados a viajes (M6), reservas (M9) o pagos (M7).
-    - RF-8.8: Consumo asíncrono desacoplado mediante eventos de RabbitMQ emitidos por M5, M6, M7 y M9 (esquemas documentados en components/schemas).
+    Responsabilidades integradas:
+    - RF-8.1 y RF-8.2: Notificaciones multicanal para eventos de viajes y reservas (Email, Push, SMS).
+    - RF-8.3: Códigos QR temporales de un solo uso para validación segura de inicio de viaje.
+    - RF-8.4: Comprobantes en PDF tras finalización de viaje o captura de pago.
+      Soporta generación reactiva a eventos (POST /api/v1/eventos) y registro síncrono (POST /api/v1/comprobantes).
+      Descarga polimórfica en GET /api/v1/comprobantes/{comprobanteId}/pdf aceptando UUID de comprobante o viajeId.
+    - RF-8.5: Reenvío de comprobantes por correo electrónico.
+    - RF-8.6: Trazabilidad, historial de envíos y reintentos controlados.
+    - RF-8.7: Tickets de soporte técnico e incidentes vinculados a viajes, reservas o pagos.
+      Identidad híbrida: extraída prioritariamente del JWT Bearer, con soporte de usuarioId en payload.
+    - RF-8.8: Consumo asíncrono desacoplado mediante eventos RabbitMQ (catálogo en components/schemas).
 
-    Convenciones técnicas (RNF-03, RNF-06):
-    - Autenticación: `Authorization: Bearer <JWT>` emitido por M1. `GET /health` no exige token.
-    - Formato de errores: Respuestas consistentes con estructura estándar (status, message, error, timestamp, path).
-    - Idempotencia: El registro de comprobantes (POST /documents/receipts) es idempotente por `tripId`.
-    - Seguridad QR: Códigos de un solo uso (quemado atómico) con TTL estricto de 300 segundos.
+    Convenciones:
+    - Autenticación: `Authorization: Bearer <JWT>` emitido por M1. En los
+      tokens de CLIENTE y de CONDUCTOR el `sub` es el identificador del
+      usuario; en los de SERVICIO, el `sub` nombra al módulo que llama (no es un
+      usuario). Los roles salen del token (CLIENTE, CONDUCTOR, OPERADOR, SERVICIO)
+      y cada operación declara los que admite en `security`, como roles de
+      OpenAPI 3.1 (`bearerAuth: [CLIENTE, OPERADOR]`). `GET /health` no exige token.
+    - Un CLIENTE o CONDUCTOR solo accede a sus propios recursos; si el recurso
+      es de otro usuario, recibe `403`. SERVICIO es el rol de los módulos que
+      le avisan o le consultan a M8 (M5, M6, M7, M9).
+    - Asincronía: los hitos llegan por `POST /api/v1/eventos` y M8 responde
+      `202` sin esperar a enviar nada. Enviar notificaciones y generar documentos
+      nunca bloquea al módulo que avisa. Cuando se incorpore la mensajería (TP2),
+      los mismos eventos viajan por la cola y este endpoint se mantiene.
+    - Entrega de notificaciones: cada envío queda registrado con sus intentos.
+      Hay como máximo 3 intentos automáticos con espera creciente; si todos
+      fallan, la notificación queda en `FALLIDA` y un OPERADOR puede reintentarla.
+      M8 nunca queda esperando indefinidamente a un proveedor externo.
+    - Privacidad: el QR, las URLs y los registros no contienen datos personales.
+      El QR lleva un token opaco que solo M8 sabe interpretar.
+    - Correlación: toda solicitud puede traer `X-Request-Id` (1 a 128
+      caracteres: letras, números, `.`, `_`, `-`). Toda respuesta, también las
+      de error, lo devuelve; si la solicitud no lo trae, o trae uno inválido,
+      M8 genera uno nuevo (nunca responde `400` por este encabezado).
+    - Errores: `application/problem+json` (RFC 9457) con el esquema `Problema`.
+      Los genéricos (`400`, `401`, `403`, `404`, `405`, `413`, `415`, `500`,
+      `503`) usan `type: about:blank` y un `title` en español; los de dominio
+      (`409`, `422`) tienen su propio `type`. Un método no definido para una
+      ruta existente responde `405` con el encabezado `Allow`.
+    - Cuerpos: solo `application/json` (otro `Content-Type`, `415`) y hasta
+      1 MiB (más grande, `413`).
+    - Listas paginadas con `page` (desde 0) y `size` (por defecto 20, máximo 100).
+    - Los POST que no deben duplicarse exigen `Idempotency-Key`: la misma clave
+      con el mismo cuerpo devuelve la respuesta original; con otro cuerpo, `422`.
+      `POST /api/v1/eventos` usa el `eventoId` del cuerpo con la misma regla.
+    - Los datos de otros módulos (viajes, reservas, pagos) llegan en el cuerpo
+      del evento; M8 nunca lee la base de otro módulo.
   version: 1.0.0
-  license:
-    name: MIT
-    identifier: MIT
-  contact:
-    name: Grupo 10 - Desarrollo de Software 2026
-
 servers:
-  - url: /api/v1
-    description: Relativa al host donde se despliegue (en local, puerto 3000).
-
+  - url: /
+    description: Relativa al host donde se despliegue.
 security:
   - bearerAuth: []
-
 tags:
   - name: Salud
-    description: Verificación de estado y salud del microservicio (RNF-14).
+    description: Disponibilidad del servicio.
+  - name: Eventos
+    description: Hitos de viajes, reservas y pagos que disparan avisos y documentos (RF-8.1, RF-8.2, RF-8.8).
   - name: Notificaciones
-    description: Motor de mensajería multicanal y trazabilidad de envíos (RF-8.1, RF-8.2, RF-8.6).
-  - name: Documentos y QR
-    description: Generación y validación de QR de un solo uso, emisión y descarga de comprobantes PDF (RF-8.3, RF-8.4, RF-8.5).
-  - name: Soporte y Tickets
-    description: Gestión del ciclo de vida de tickets de reclamo e incidentes (RF-8.7).
-  - name: Eventos Asíncronos
+    description: Avisos a clientes y conductores y seguimiento de su entrega (RF-8.1, RF-8.2, RF-8.6).
+  - name: QR
+    description: QR temporal y de un solo uso para validar el inicio del viaje (RF-8.3).
+  - name: Comprobantes
+    description: Comprobantes en PDF y su reenvío (RF-8.4, RF-8.5).
+  - name: Tickets
+    description: Soporte asociado a un viaje, una reserva o un pago (RF-8.7).
+  - name: Eventos Asíncronos (AMQP)
     description: Catálogo de eventos consumidos desde RabbitMQ emitidos por M5, M6, M7 y M9 (RF-8.8).
 
 paths:
   /health:
+    parameters:
+      - $ref: '#/components/parameters/XRequestId'
     get:
-      summary: Healthcheck del servicio (RNF-14)
-      operationId: getHealth
+      tags: [Salud]
+      operationId: verificarSalud
+      summary: Verificar que el servicio responde
+      description: |
+        No exige token. Responde `200` si el servicio y su base están
+        disponibles; si no, `503`.
       security: []
-      tags:
-        - Salud
       responses:
         '200':
-          description: El servicio se encuentra saludable y operativo
+          description: El servicio responde.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/HealthResponseDto'
-              example:
-                status: ok
-                timestamp: "2026-10-22T14:30:00.000Z"
-                module: M8 - Notificaciones, Documentos y Soporte
-                uptimeSeconds: 1420
-        '404':
-          description: Recurso no encontrado
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponseDto'
+                $ref: '#/components/schemas/Salud'
+        '500':
+          $ref: '#/components/responses/ErrorInterno'
         '503':
-          description: Servicio no disponible o falla en componentes críticos
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponseDto'
+          $ref: '#/components/responses/ServicioNoDisponible'
 
-  # ─── Subdominio: Notificaciones ─────────────────────────────────────────────
-  /notifications/send:
+  /api/v1/eventos:
+    parameters:
+      - $ref: '#/components/parameters/XRequestId'
     post:
-      summary: Enviar una notificación multicanal (RF-8.1, RF-8.2)
+      tags: [Eventos]
+      operationId: recibirEvento
+      summary: Informar un hito de viaje, reserva o pago
       description: |
-        Envía una notificación al destinatario especificado a través del canal elegido (EMAIL, SMS, PUSH).
-        Registra automáticamente el resultado en el historial de trazabilidad (RF-8.6).
-      operationId: sendNotification
-      tags:
-        - Notificaciones
+        M5, M6, M7 y M9 informan acá cada hito. M8 lo registra y responde `202`;
+        las notificaciones y los comprobantes se generan después, sin bloquear
+        al que llama. El `eventoId` identifica el evento: si el mismo evento
+        llega dos veces con el mismo cuerpo, M8 devuelve la respuesta original
+        y no duplica avisos ni documentos; con otro cuerpo, `422`.
+
+        Qué avisa cada tipo y quién lo envía:
+        - `VIAJE_*`: M5 informa `VIAJE_SOLICITADO` y `VIAJE_ASIGNADO`; M6 informa
+          el resto. Requieren `viajeId`.
+        - `RESERVA_*`: M9. Requieren `reservaId`. `RESERVA_RECORDATORIO` lo
+          emite M9 en el momento en que corresponde avisar; M8 no agenda nada.
+        - `PAGO_CAPTURADO` y `REINTEGRO_REGISTRADO`: M7. Requieren `pagoId` y
+          `viajeId`. Disparan el comprobante.
+        - `VIAJE_FINALIZADO` también puede disparar el comprobante si M7 todavía
+          no informó el pago.
+      security:
+        - bearerAuth: [SERVICIO]
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/SendNotificationDto'
-            example:
-              channel: EMAIL
-              recipient: pasajero@ejemplo.com
-              subject: Tu conductor está en camino
-              content: Martín (Toyota Corolla - AB123CD) llegará en aproximadamente 5 minutos.
-              referenceId: trip-9082
-              referenceType: TRIP
+              $ref: '#/components/schemas/EventoEntrada'
       responses:
-        '201':
-          description: Notificación procesada y despachada exitosamente
+        '202':
+          description: Evento recibido. Se procesa de forma asíncrona.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SendNotificationResponseDto'
-              example:
-                success: true
-                id: notif-uuid-4481
-                status: SENT
+                $ref: '#/components/schemas/EventoRecibido'
         '400':
-          description: Parámetros inválidos en la solicitud
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponseDto'
-              example:
-                statusCode: 400
-                message:
-                  - recipient must be an email
-                  - channel must be one of EMAIL, PUSH, SMS
-                error: Bad Request
-                timestamp: "2026-10-22T14:30:00.000Z"
+          $ref: '#/components/responses/SolicitudInvalida'
         '401':
-          description: No autenticado
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponseDto'
-        '502':
-          description: Error al contactar el servidor de transporte externo (ej. SMTP / Mailpit)
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponseDto'
+          $ref: '#/components/responses/NoAutenticado'
+        '403':
+          $ref: '#/components/responses/SinPermiso'
+        '413':
+          $ref: '#/components/responses/CuerpoDemasiadoGrande'
+        '415':
+          $ref: '#/components/responses/TipoNoSoportado'
+        '422':
+          $ref: '#/components/responses/NoProcesable'
+        '500':
+          $ref: '#/components/responses/ErrorInterno'
+        '503':
+          $ref: '#/components/responses/ServicioNoDisponible'
 
-  /notifications/logs:
+  /api/v1/notificaciones:
+    parameters:
+      - $ref: '#/components/parameters/XRequestId'
     get:
-      summary: Consultar historial de entregas de notificaciones (RF-8.6)
-      description: |
-        Permite a operadores auditar el estado y los reintentos de envíos de avisos,
-        con filtros opcionales por destinatario y estado de entrega.
-      operationId: getNotificationLogs
-      tags:
-        - Notificaciones
+      tags: [Notificaciones]
+      operationId: listarNotificaciones
+      summary: Listar notificaciones
+      description: Más recientes primero.
+      security:
+        - bearerAuth: [OPERADOR, SERVICIO]
       parameters:
-        - name: recipient
+        - name: destinatarioId
           in: query
-          description: Filtrar por email o identificador de destinatario
           required: false
           schema:
             type: string
-            example: pasajero@ejemplo.com
-        - name: status
+            format: uuid
+        - name: estado
           in: query
-          description: Filtrar por estado del envío
           required: false
           schema:
+            $ref: '#/components/schemas/EstadoNotificacion'
+        - name: canal
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/Canal'
+        - name: tipoEvento
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/TipoEvento'
+        - name: referenciaId
+          in: query
+          required: false
+          description: Viaje, reserva o pago al que se refiere la notificación.
+          schema:
             type: string
-            enum: [PENDING, SENT, FAILED]
-            example: SENT
+            format: uuid
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
       responses:
         '200':
-          description: Lista de registros de auditoría de notificaciones
+          description: Página de notificaciones.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/NotificationLogDto'
-              example:
-                - id: notif-uuid-4481
-                  channel: EMAIL
-                  recipient: pasajero@ejemplo.com
-                  subject: Tu conductor está en camino
-                  status: SENT
-                  retryCount: 0
-                  referenceId: trip-9082
-                  referenceType: TRIP
-                  createdAt: "2026-10-22T14:25:00.000Z"
+                $ref: '#/components/schemas/PaginaNotificaciones'
         '400':
-          description: Parámetros de consulta inválidos
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponseDto'
+          $ref: '#/components/responses/SolicitudInvalida'
         '401':
-          description: No autenticado
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponseDto'
-
-  # ─── Subdominio: Documentos y Códigos QR ─────────────────────────────────────
-  /documents/qr/generate:
+          $ref: '#/components/responses/NoAutenticado'
+        '403':
+          $ref: '#/components/responses/SinPermiso'
+        '500':
+          $ref: '#/components/responses/ErrorInterno'
+        '503':
+          $ref: '#/components/responses/ServicioNoDisponible'
     post:
-      summary: Generar código QR temporal de un solo uso (RF-8.3)
+      tags: [Notificaciones]
+      operationId: enviarNotificacion
+      summary: Enviar una notificación manual
       description: |
-        Genera un token seguro y una imagen DataURL en Base64 para el inicio de viaje.
-        El token se almacena con un TTL estricto (300 segundos) en Redis para validación atómica rápida
-        y se persiste en PostgreSQL para auditoría.
-      operationId: generateQr
-      tags:
-        - Documentos y QR
+        Para avisos que no salen de un hito (por ejemplo, una comunicación de un
+        operador). Queda registrada como cualquier otra y sigue la misma política
+        de intentos.
+      security:
+        - bearerAuth: [OPERADOR]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/GenerateQrDto'
-            example:
-              tripId: trip-9082
-              passengerId: usr-pass-456
-              ttlSeconds: 300
+              $ref: '#/components/schemas/NotificacionNueva'
       responses:
-        '201':
-          description: Código QR generado exitosamente
+        '202':
+          description: Notificación registrada. El envío es asíncrono.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            Location:
+              $ref: '#/components/headers/Location'
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/QrResponseDto'
-              example:
-                token: qr_trip-9082_a1b2c3d4e5f67890
-                tripId: trip-9082
-                qrDataUrl: data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA...
-                expiresAt: "2026-10-22T14:35:00.000Z"
-                ttlSeconds: 300
+                $ref: '#/components/schemas/Notificacion'
         '400':
-          description: Parámetros inválidos
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponseDto'
+          $ref: '#/components/responses/SolicitudInvalida'
         '401':
-          description: No autenticado
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponseDto'
+          $ref: '#/components/responses/NoAutenticado'
+        '403':
+          $ref: '#/components/responses/SinPermiso'
+        '413':
+          $ref: '#/components/responses/CuerpoDemasiadoGrande'
+        '415':
+          $ref: '#/components/responses/TipoNoSoportado'
+        '422':
+          $ref: '#/components/responses/NoProcesable'
+        '500':
+          $ref: '#/components/responses/ErrorInterno'
+        '503':
+          $ref: '#/components/responses/ServicioNoDisponible'
 
-  /documents/qr/verify:
-    post:
-      summary: Validar y consumir código QR de un solo uso (RF-8.3, RF-6.4)
-      description: |
-        Invocado por el conductor al retirar al pasajero. Verifica la validez del token
-        asociado al viaje. Si es válido, lo consume y destruye de forma atómica en Redis
-        e invalida en PostgreSQL para impedir reutilizaciones (RNF-08).
-      operationId: verifyQr
-      tags:
-        - Documentos y QR
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/VerifyQrDto'
-            example:
-              token: qr_trip-9082_a1b2c3d4e5f67890
-              tripId: trip-9082
+  /api/v1/notificaciones/{notificacionId}:
+    parameters:
+      - $ref: '#/components/parameters/XRequestId'
+      - $ref: '#/components/parameters/NotificacionId'
+    get:
+      tags: [Notificaciones]
+      operationId: obtenerNotificacion
+      summary: Consultar el estado de una notificación
+      security:
+        - bearerAuth: [OPERADOR, SERVICIO]
       responses:
         '200':
-          description: Código QR verificado y consumido exitosamente. Inicio de viaje habilitado.
+          description: Notificación.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/VerifyQrResponseDto'
-              example:
-                valid: true
-                tripId: trip-9082
-                token: qr_trip-9082_a1b2c3d4e5f67890
-                verifiedAt: "2026-10-22T14:31:15.000Z"
-                message: Código QR verificado exitosamente. Inicio de viaje habilitado.
+                $ref: '#/components/schemas/Notificacion'
         '400':
-          description: El código QR no corresponde al viaje especificado
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponseDto'
-              example:
-                statusCode: 400
-                message: El código QR no corresponde a este viaje.
-                error: Bad Request
-                timestamp: "2026-10-22T14:31:15.000Z"
+          $ref: '#/components/responses/SolicitudInvalida'
         '401':
-          description: No autenticado
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponseDto'
+          $ref: '#/components/responses/NoAutenticado'
+        '403':
+          $ref: '#/components/responses/SinPermiso'
         '404':
-          description: Token no encontrado o inexistente
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponseDto'
-              example:
-                statusCode: 404
-                message: Código QR no encontrado o inválido.
-                error: Not Found
-                timestamp: "2026-10-22T14:31:15.000Z"
-        '410':
-          description: Token expirado por TTL o ya consumido anteriormente (un solo uso)
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponseDto'
-              example:
-                statusCode: 410
-                message: El código QR ya fue utilizado anteriormente (código de un solo uso consumido).
-                error: Gone
-                timestamp: "2026-10-22T14:31:15.000Z"
+          $ref: '#/components/responses/NoEncontrado'
+        '500':
+          $ref: '#/components/responses/ErrorInterno'
+        '503':
+          $ref: '#/components/responses/ServicioNoDisponible'
 
-  /documents/receipts:
+  /api/v1/notificaciones/{notificacionId}/intentos:
+    parameters:
+      - $ref: '#/components/parameters/XRequestId'
+      - $ref: '#/components/parameters/NotificacionId'
+    get:
+      tags: [Notificaciones]
+      operationId: listarIntentos
+      summary: Historial de intentos de entrega
+      description: En orden cronológico. No se borra ni se modifica (RF-8.6).
+      security:
+        - bearerAuth: [OPERADOR, SERVICIO]
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+      responses:
+        '200':
+          description: Página de intentos.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginaIntentos'
+        '400':
+          $ref: '#/components/responses/SolicitudInvalida'
+        '401':
+          $ref: '#/components/responses/NoAutenticado'
+        '403':
+          $ref: '#/components/responses/SinPermiso'
+        '404':
+          $ref: '#/components/responses/NoEncontrado'
+        '500':
+          $ref: '#/components/responses/ErrorInterno'
+        '503':
+          $ref: '#/components/responses/ServicioNoDisponible'
+
+  /api/v1/notificaciones/{notificacionId}/reintentos:
+    parameters:
+      - $ref: '#/components/parameters/XRequestId'
+      - $ref: '#/components/parameters/NotificacionId'
     post:
-      summary: Registrar comprobante de viaje finalizado (RF-8.4)
+      tags: [Notificaciones]
+      operationId: reintentarNotificacion
+      summary: Reintentar una notificación fallida
       description: |
-        Registra formalmente los metadatos y desglose de un comprobante emitido tras la finalización
-        o pago de un viaje. Es una operación idempotente: si ya existe un comprobante para el tripId,
-        retorna el registro original sin duplicarlo (RNF-08).
-      operationId: registerReceipt
-      tags:
-        - Documentos y QR
+        Solo se puede reintentar una notificación en `FALLIDA`; en otro estado,
+        `409`. Agrega un intento nuevo y no borra los anteriores.
+      security:
+        - bearerAuth: [OPERADOR]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '202':
+          description: Reintento aceptado. Se ejecuta de forma asíncrona.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Notificacion'
+        '400':
+          $ref: '#/components/responses/SolicitudInvalida'
+        '401':
+          $ref: '#/components/responses/NoAutenticado'
+        '403':
+          $ref: '#/components/responses/SinPermiso'
+        '404':
+          $ref: '#/components/responses/NoEncontrado'
+        '409':
+          $ref: '#/components/responses/Conflicto'
+        '422':
+          $ref: '#/components/responses/NoProcesable'
+        '500':
+          $ref: '#/components/responses/ErrorInterno'
+        '503':
+          $ref: '#/components/responses/ServicioNoDisponible'
+
+  /api/v1/viajes/{viajeId}/qr:
+    parameters:
+      - $ref: '#/components/parameters/XRequestId'
+      - $ref: '#/components/parameters/ViajeId'
+    post:
+      tags: [QR]
+      operationId: generarQr
+      summary: Generar el QR de verificación de un viaje
+      description: |
+        Genera un QR temporal y de un solo uso. Si el viaje ya tenía un QR
+        vigente, el anterior pasa a `REEMPLAZADO` y deja de ser válido. El `token`
+        se devuelve solo en esta respuesta y no se puede consultar después.
+        Un CLIENTE solo puede generarlo para sí mismo (`clienteId` igual a su `sub`).
+      security:
+        - bearerAuth: [CLIENTE, SERVICIO]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/RegisterReceiptDto'
-            example:
-              tripId: trip-9082
-              passengerId: usr-pass-456
-              passengerEmail: pasajero@ejemplo.com
-              amount: 4500.50
-              currency: ARS
-              driverName: Martín Conductor
+              $ref: '#/components/schemas/QrNuevo'
       responses:
         '201':
-          description: Comprobante registrado exitosamente (o existente devuelto)
+          description: QR generado.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ReceiptResponseDto'
-              example:
-                id: rec-uuid-1001
-                receiptCode: REC-2026-00042
-                tripId: trip-9082
-                passengerId: usr-pass-456
-                passengerEmail: pasajero@ejemplo.com
-                amount: 4500.50
-                currency: ARS
-                driverName: Martín Conductor
-                issuedAt: "2026-10-22T14:20:00.000Z"
+                $ref: '#/components/schemas/Qr'
         '400':
-          description: Datos de entrada inválidos
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponseDto'
+          $ref: '#/components/responses/SolicitudInvalida'
         '401':
-          description: No autenticado
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponseDto'
+          $ref: '#/components/responses/NoAutenticado'
+        '403':
+          $ref: '#/components/responses/SinPermiso'
+        '413':
+          $ref: '#/components/responses/CuerpoDemasiadoGrande'
+        '415':
+          $ref: '#/components/responses/TipoNoSoportado'
+        '422':
+          $ref: '#/components/responses/NoProcesable'
+        '500':
+          $ref: '#/components/responses/ErrorInterno'
+        '503':
+          $ref: '#/components/responses/ServicioNoDisponible'
 
-  /documents/receipts/{tripId}/download:
-    get:
-      summary: Descargar comprobante de viaje en PDF (RF-8.4)
+  /api/v1/qr/validaciones:
+    parameters:
+      - $ref: '#/components/parameters/XRequestId'
+    post:
+      tags: [QR]
+      operationId: validarQr
+      summary: Validar y consumir un QR
       description: |
-        Busca el comprobante registrado para el tripId y genera on-demand el documento PDF
-        respetando el layout formal y preservando la fecha de emisión original. No muta la base de datos.
-      operationId: downloadReceiptPdf
-      tags:
-        - Documentos y QR
+        M6 la usa para iniciar el viaje (RF-6.4). Si el QR es válido, queda
+        consumido en la misma operación: ante dos validaciones concurrentes del
+        mismo QR, solo una responde `200` y la otra `409`.
+        - `404`: el token no existe.
+        - `409`: el QR ya fue usado o fue reemplazado.
+        - `422`: el QR expiró o no corresponde al `viajeId` indicado.
+      security:
+        - bearerAuth: [SERVICIO]
       parameters:
-        - name: tripId
-          in: path
-          required: true
-          description: Identificador único del viaje
-          schema:
-            type: string
-            example: trip-9082
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ValidacionQrNueva'
       responses:
         '200':
-          description: Archivo PDF generado y enviado como adjunto para descarga
+          description: QR válido y consumido.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidacionQr'
+        '400':
+          $ref: '#/components/responses/SolicitudInvalida'
+        '401':
+          $ref: '#/components/responses/NoAutenticado'
+        '403':
+          $ref: '#/components/responses/SinPermiso'
+        '404':
+          $ref: '#/components/responses/NoEncontrado'
+        '409':
+          $ref: '#/components/responses/Conflicto'
+        '413':
+          $ref: '#/components/responses/CuerpoDemasiadoGrande'
+        '415':
+          $ref: '#/components/responses/TipoNoSoportado'
+        '422':
+          $ref: '#/components/responses/NoProcesable'
+        '500':
+          $ref: '#/components/responses/ErrorInterno'
+        '503':
+          $ref: '#/components/responses/ServicioNoDisponible'
+
+  /api/v1/comprobantes:
+    parameters:
+      - $ref: '#/components/parameters/XRequestId'
+    get:
+      tags: [Comprobantes]
+      operationId: listarComprobantes
+      summary: Listar comprobantes
+      description: |
+        Un CLIENTE ve solo los suyos. Un OPERADOR ve todos y puede filtrar por
+        `clienteId`.
+      security:
+        - bearerAuth: [CLIENTE, OPERADOR]
+      parameters:
+        - name: viajeId
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: clienteId
+          in: query
+          required: false
+          description: Solo lo usa el OPERADOR.
+          schema:
+            type: string
+            format: uuid
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+      responses:
+        '200':
+          description: Página de comprobantes.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginaComprobantes'
+        '400':
+          $ref: '#/components/responses/SolicitudInvalida'
+        '401':
+          $ref: '#/components/responses/NoAutenticado'
+        '403':
+          $ref: '#/components/responses/SinPermiso'
+        '500':
+          $ref: '#/components/responses/ErrorInterno'
+        '503':
+          $ref: '#/components/responses/ServicioNoDisponible'
+
+    post:
+      tags: [Comprobantes]
+      operationId: registrarComprobante
+      summary: Registrar metadatos de comprobante síncronamente (RF-8.4 - Modo Síncrono / Fallback)
+      description: |
+        Permite el alta o registro síncrono de los metadatos de un comprobante de viaje.
+        Es idempotente por `viajeId`: si ya existe un comprobante para el viaje,
+        devuelve el registro existente sin duplicar la facturación.
+      security:
+        - bearerAuth: [SERVICIO, OPERADOR]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ComprobanteNuevo'
+      responses:
+        '201':
+          description: Comprobante registrado exitosamente o comprobante existente devuelto.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Comprobante'
+        '400':
+          $ref: '#/components/responses/SolicitudInvalida'
+        '401':
+          $ref: '#/components/responses/NoAutenticado'
+        '403':
+          $ref: '#/components/responses/SinPermiso'
+        '409':
+          $ref: '#/components/responses/Conflicto'
+        '500':
+          $ref: '#/components/responses/ErrorInterno'
+        '503':
+          $ref: '#/components/responses/ServicioNoDisponible'
+  /api/v1/comprobantes/{comprobanteId}:
+    parameters:
+      - $ref: '#/components/parameters/XRequestId'
+      - $ref: '#/components/parameters/ComprobanteId'
+    get:
+      tags: [Comprobantes]
+      operationId: obtenerComprobante
+      summary: Consultar un comprobante
+      description: |
+        El comprobante se genera de forma asíncrona después del evento que lo
+        dispara. Mientras tanto, su `estado` es `PENDIENTE`.
+      security:
+        - bearerAuth: [CLIENTE, OPERADOR]
+      responses:
+        '200':
+          description: Comprobante.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Comprobante'
+        '400':
+          $ref: '#/components/responses/SolicitudInvalida'
+        '401':
+          $ref: '#/components/responses/NoAutenticado'
+        '403':
+          $ref: '#/components/responses/SinPermiso'
+        '404':
+          $ref: '#/components/responses/NoEncontrado'
+        '500':
+          $ref: '#/components/responses/ErrorInterno'
+        '503':
+          $ref: '#/components/responses/ServicioNoDisponible'
+
+  /api/v1/comprobantes/{comprobanteId}/pdf:
+    parameters:
+      - $ref: '#/components/parameters/XRequestId'
+      - $ref: '#/components/parameters/ComprobanteId'
+    get:
+      tags: [Comprobantes]
+      operationId: descargarComprobantePdf
+      summary: Descargar el PDF del comprobante
+      description: Si el comprobante todavía no está generado, responde `409`.
+      security:
+        - bearerAuth: [CLIENTE, OPERADOR]
+      responses:
+        '200':
+          description: Archivo PDF.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
           content:
             application/pdf:
               schema:
                 type: string
                 format: binary
+        '400':
+          $ref: '#/components/responses/SolicitudInvalida'
         '401':
-          description: No autenticado
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponseDto'
+          $ref: '#/components/responses/NoAutenticado'
+        '403':
+          $ref: '#/components/responses/SinPermiso'
         '404':
-          description: No existe comprobante registrado para el viaje solicitado
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponseDto'
+          $ref: '#/components/responses/NoEncontrado'
+        '409':
+          $ref: '#/components/responses/Conflicto'
+        '500':
+          $ref: '#/components/responses/ErrorInterno'
+        '503':
+          $ref: '#/components/responses/ServicioNoDisponible'
 
-  /documents/receipts/resend:
+  /api/v1/comprobantes/{comprobanteId}/reenvios:
+    parameters:
+      - $ref: '#/components/parameters/XRequestId'
+      - $ref: '#/components/parameters/ComprobanteId'
     post:
-      summary: Reenviar comprobante por email con PDF adjunto (RF-8.5)
+      tags: [Comprobantes]
+      operationId: reenviarComprobante
+      summary: Volver a enviar el comprobante
       description: |
-        Regenera el PDF con los datos y fecha originales guardados en la persistencia
-        y lo despacha adjunto por correo electrónico al destinatario indicado.
-      operationId: resendReceipt
-      tags:
-        - Documentos y QR
+        Envía el enlace de descarga al contacto registrado del cliente, nunca a
+        una dirección indicada en la solicitud. Genera una notificación, que
+        sigue la misma política de intentos que las demás. Si el comprobante no
+        está generado, `409`.
+      security:
+        - bearerAuth: [CLIENTE, OPERADOR]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/ResendReceiptDto'
-            example:
-              tripId: trip-9082
-              email: pasajero@ejemplo.com
+              $ref: '#/components/schemas/ReenvioComprobante'
+      responses:
+        '202':
+          description: Reenvío aceptado. El envío es asíncrono.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Notificacion'
+        '400':
+          $ref: '#/components/responses/SolicitudInvalida'
+        '401':
+          $ref: '#/components/responses/NoAutenticado'
+        '403':
+          $ref: '#/components/responses/SinPermiso'
+        '404':
+          $ref: '#/components/responses/NoEncontrado'
+        '409':
+          $ref: '#/components/responses/Conflicto'
+        '413':
+          $ref: '#/components/responses/CuerpoDemasiadoGrande'
+        '415':
+          $ref: '#/components/responses/TipoNoSoportado'
+        '422':
+          $ref: '#/components/responses/NoProcesable'
+        '500':
+          $ref: '#/components/responses/ErrorInterno'
+        '503':
+          $ref: '#/components/responses/ServicioNoDisponible'
+
+  /api/v1/tickets:
+    parameters:
+      - $ref: '#/components/parameters/XRequestId'
+    get:
+      tags: [Tickets]
+      operationId: listarTickets
+      summary: Listar tickets
+      description: |
+        Un CLIENTE o CONDUCTOR ve solo los suyos. Un OPERADOR ve todos y puede
+        filtrar por `usuarioId`. Más recientes primero.
+      security:
+        - bearerAuth: [CLIENTE, CONDUCTOR, OPERADOR]
+      parameters:
+        - name: estado
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/EstadoTicket'
+        - name: referenciaTipo
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/TipoReferenciaTicket'
+        - name: referenciaId
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: usuarioId
+          in: query
+          required: false
+          description: Solo lo usa el OPERADOR.
+          schema:
+            type: string
+            format: uuid
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
       responses:
         '200':
-          description: Comprobante reenviado exitosamente
+          description: Página de tickets.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ResendReceiptResponseDto'
-              example:
-                success: true
-                tripId: trip-9082
-                receiptCode: REC-2026-00042
-                sentTo: pasajero@ejemplo.com
-                timestamp: "2026-10-22T14:35:00.000Z"
+                $ref: '#/components/schemas/PaginaTickets'
         '400':
-          description: Datos de entrada inválidos
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponseDto'
+          $ref: '#/components/responses/SolicitudInvalida'
         '401':
-          description: No autenticado
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponseDto'
-        '404':
-          description: Comprobante no encontrado para el tripId indicado
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponseDto'
-        '502':
-          description: Fallo en el servidor de correo SMTP al despachar el email
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponseDto'
-
-  # ─── Subdominio: Soporte y Tickets ──────────────────────────────────────────
-  /support/tickets:
+          $ref: '#/components/responses/NoAutenticado'
+        '403':
+          $ref: '#/components/responses/SinPermiso'
+        '500':
+          $ref: '#/components/responses/ErrorInterno'
+        '503':
+          $ref: '#/components/responses/ServicioNoDisponible'
     post:
-      summary: Crear ticket de soporte asociado a viaje, reserva o pago (RF-8.7)
+      tags: [Tickets]
+      operationId: crearTicket
+      summary: Crear un ticket de soporte
       description: |
-        Crea un reclamo o consulta operativa vinculado a una entidad de otro módulo
-        (TRIP de M6, RESERVATION de M9, PAYMENT de M7). Asigna automáticamente un código único TCK.
-      operationId: createTicket
-      tags:
-        - Soporte y Tickets
+        El ticket queda a nombre del usuario autenticado (`sub` del token) y
+        asociado a un viaje, una reserva o un pago. M8 no verifica con otro
+        módulo que la referencia exista ni que sea del usuario.
+      security:
+        - bearerAuth: [CLIENTE, CONDUCTOR]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/CreateTicketDto'
-            example:
-              referenceId: trip-9082
-              referenceType: TRIP
-              subject: Diferencia de cobro en peajes
-              description: El conductor me cobró peajes no contemplados en la tarifa estimada.
-              createdBy: usr-pass-456
+              $ref: '#/components/schemas/TicketNuevo'
       responses:
         '201':
-          description: Ticket creado exitosamente
+          description: Ticket creado.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            Location:
+              $ref: '#/components/headers/Location'
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/TicketResponseDto'
-              example:
-                id: tck-uuid-5001
-                ticketNumber: TCK-2026-1001
-                referenceId: trip-9082
-                referenceType: TRIP
-                subject: Diferencia de cobro en peajes
-                description: El conductor me cobró peajes no contemplados en la tarifa estimada.
-                status: OPEN
-                priority: MEDIUM
-                createdBy: usr-pass-456
-                createdAt: "2026-10-22T14:15:00.000Z"
-                updatedAt: "2026-10-22T14:15:00.000Z"
+                $ref: '#/components/schemas/Ticket'
         '400':
-          description: Parámetros inválidos
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponseDto'
+          $ref: '#/components/responses/SolicitudInvalida'
         '401':
-          description: No autenticado
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponseDto'
+          $ref: '#/components/responses/NoAutenticado'
+        '403':
+          $ref: '#/components/responses/SinPermiso'
+        '413':
+          $ref: '#/components/responses/CuerpoDemasiadoGrande'
+        '415':
+          $ref: '#/components/responses/TipoNoSoportado'
+        '422':
+          $ref: '#/components/responses/NoProcesable'
+        '500':
+          $ref: '#/components/responses/ErrorInterno'
+        '503':
+          $ref: '#/components/responses/ServicioNoDisponible'
 
+  /api/v1/tickets/{ticketId}:
+    parameters:
+      - $ref: '#/components/parameters/XRequestId'
+      - $ref: '#/components/parameters/TicketId'
     get:
-      summary: Listar tickets de soporte con filtros (RF-8.7)
-      description: Permite a los operadores consultar y filtrar tickets por estado o identificador de referencia.
-      operationId: listTickets
-      tags:
-        - Soporte y Tickets
-      parameters:
-        - name: referenceId
-          in: query
-          required: false
-          schema:
-            type: string
-            example: trip-9082
-        - name: status
-          in: query
-          required: false
-          schema:
-            type: string
-            enum: [OPEN, IN_PROGRESS, RESOLVED, CLOSED]
-            example: OPEN
+      tags: [Tickets]
+      operationId: obtenerTicket
+      summary: Consultar un ticket
+      security:
+        - bearerAuth: [CLIENTE, CONDUCTOR, OPERADOR]
       responses:
         '200':
-          description: Listado de tickets de soporte
+          description: Ticket.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: '#/components/schemas/TicketResponseDto'
+                $ref: '#/components/schemas/Ticket'
         '400':
-          description: Parámetros de filtro inválidos
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponseDto'
+          $ref: '#/components/responses/SolicitudInvalida'
         '401':
-          description: No autenticado
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponseDto'
-
-  /support/tickets/{id}:
-    get:
-      summary: Obtener detalle de un ticket de soporte (RF-8.7)
-      operationId: getTicketById
-      tags:
-        - Soporte y Tickets
-      parameters:
-        - name: id
-          in: path
-          required: true
-          description: ID único o ticketNumber del ticket
-          schema:
-            type: string
-            example: tck-uuid-5001
-      responses:
-        '200':
-          description: Detalle del ticket
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/TicketResponseDto'
-        '401':
-          description: No autenticado
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponseDto'
+          $ref: '#/components/responses/NoAutenticado'
+        '403':
+          $ref: '#/components/responses/SinPermiso'
         '404':
-          description: Ticket no encontrado
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponseDto'
-
-  /support/tickets/{id}/status:
+          $ref: '#/components/responses/NoEncontrado'
+        '500':
+          $ref: '#/components/responses/ErrorInterno'
+        '503':
+          $ref: '#/components/responses/ServicioNoDisponible'
     patch:
-      summary: Actualizar estado y resolución de un ticket (RF-8.7)
-      description: Permite transicionar el estado del ticket (OPEN, IN_PROGRESS, RESOLVED, CLOSED).
-      operationId: updateTicketStatus
-      tags:
-        - Soporte y Tickets
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-            example: tck-uuid-5001
+      tags: [Tickets]
+      operationId: cambiarEstadoTicket
+      summary: Cambiar el estado de un ticket
+      description: |
+        Transiciones válidas: `ABIERTO` a `EN_REVISION`, `EN_REVISION` a
+        `RESUELTO`, `RESUELTO` a `CERRADO` y `RESUELTO` a `EN_REVISION` (reabrir).
+        Cualquier otra responde `409`. Pasar a `RESUELTO` exige `resolucion`
+        (si falta, `422`). Cada cambio queda en el historial.
+      security:
+        - bearerAuth: [OPERADOR]
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/UpdateTicketStatusDto'
-            example:
-              status: RESOLVED
-              resolutionNote: Se acreditó reintegro por peaje indebido.
+              $ref: '#/components/schemas/TicketCambioEstado'
       responses:
         '200':
-          description: Estado del ticket actualizado exitosamente
+          description: Ticket actualizado.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/TicketResponseDto'
+                $ref: '#/components/schemas/Ticket'
         '400':
-          description: Transición de estado inválida
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponseDto'
+          $ref: '#/components/responses/SolicitudInvalida'
         '401':
-          description: No autenticado
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponseDto'
+          $ref: '#/components/responses/NoAutenticado'
+        '403':
+          $ref: '#/components/responses/SinPermiso'
         '404':
-          description: Ticket no encontrado
+          $ref: '#/components/responses/NoEncontrado'
+        '409':
+          $ref: '#/components/responses/Conflicto'
+        '413':
+          $ref: '#/components/responses/CuerpoDemasiadoGrande'
+        '415':
+          $ref: '#/components/responses/TipoNoSoportado'
+        '422':
+          $ref: '#/components/responses/NoProcesable'
+        '500':
+          $ref: '#/components/responses/ErrorInterno'
+        '503':
+          $ref: '#/components/responses/ServicioNoDisponible'
+
+  /api/v1/tickets/{ticketId}/historial:
+    parameters:
+      - $ref: '#/components/parameters/XRequestId'
+      - $ref: '#/components/parameters/TicketId'
+    get:
+      tags: [Tickets]
+      operationId: listarHistorialTicket
+      summary: Historial de estados de un ticket
+      description: En orden cronológico. No se borra ni se modifica.
+      security:
+        - bearerAuth: [CLIENTE, CONDUCTOR, OPERADOR]
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Size'
+      responses:
+        '200':
+          description: Página del historial.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponseDto'
+                $ref: '#/components/schemas/PaginaHistorialTicket'
+        '400':
+          $ref: '#/components/responses/SolicitudInvalida'
+        '401':
+          $ref: '#/components/responses/NoAutenticado'
+        '403':
+          $ref: '#/components/responses/SinPermiso'
+        '404':
+          $ref: '#/components/responses/NoEncontrado'
+        '500':
+          $ref: '#/components/responses/ErrorInterno'
+        '503':
+          $ref: '#/components/responses/ServicioNoDisponible'
 
 components:
   securitySchemes:
@@ -645,377 +931,929 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
-      description: Token emitido por M1 para autenticación de Cliente, Conductor o Administrador/Operador.
+      description: |
+        Token emitido por M1. En los tokens de CLIENTE y CONDUCTOR, `sub` es el
+        identificador del usuario; en los de SERVICIO, `sub` nombra al módulo
+        que llama. Los roles (CLIENTE, CONDUCTOR, OPERADOR, SERVICIO) van en el
+        token y cada operación declara en `security` los que admite.
+
+  parameters:
+    XRequestId:
+      name: X-Request-Id
+      in: header
+      required: false
+      description: |
+        Identificador de correlación. Vuelve en la respuesta si tiene de 1 a 128
+        caracteres (letras, números, `.`, `_`, `-`); si no llega o no cumple ese
+        formato, M8 genera uno nuevo. Nunca provoca un `400`.
+      schema:
+        type: string
+    NotificacionId:
+      name: notificacionId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    ViajeId:
+      name: viajeId
+      in: path
+      required: true
+      description: Identificador del viaje, asignado por M6.
+      schema:
+        type: string
+        format: uuid
+    ComprobanteId:
+      name: comprobanteId
+      in: path
+      required: true
+      description: |
+        Identificador único del comprobante (UUID) o identificador del viaje asociado (`viajeId`).
+        El servicio resuelve polimórficamente ambos identificadores para descarga de PDF y consulta directa.
+      schema:
+        type: string
+      examples:
+        uuidComprobante:
+          value: 7c9e6679-7425-40de-944b-e07fc1f90ae7
+        identificadorViaje:
+          value: trip-uuid-1001
+    TicketId:
+      name: ticketId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    Page:
+      name: page
+      in: query
+      required: false
+      description: Número de página, desde 0.
+      schema:
+        type: integer
+        minimum: 0
+        default: 0
+    Size:
+      name: size
+      in: query
+      required: false
+      description: Elementos por página.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: |
+        Clave única generada por quien llama (se recomienda UUID). Con la misma
+        clave y el mismo cuerpo se devuelve la respuesta original sin repetir el
+        efecto; con la misma clave y otro cuerpo, `422`.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 255
+
+  headers:
+    Location:
+      description: URL del recurso creado.
+      schema:
+        type: string
+        format: uri-reference
+    XRequestId:
+      description: |
+        Identificador de correlación: el recibido en `X-Request-Id` o, si no
+        llegó, el que generó M8.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
+        pattern: '^[A-Za-z0-9._-]{1,128}$'
+    Allow:
+      description: Métodos admitidos por la ruta (por ejemplo, `GET, PATCH`).
+      schema:
+        type: string
+    RetryAfter:
+      description: Segundos sugeridos antes de reintentar.
+      schema:
+        type: integer
+        minimum: 1
+
+  responses:
+    # Errores genéricos: type about:blank (RFC 9457, sección 4.2.1).
+    SolicitudInvalida:
+      description: |
+        Cuerpo, parámetros o encabezados con formato inválido (incluye un
+        identificador de la ruta que no es UUID).
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemaGenerico'
+    NoAutenticado:
+      description: Falta el token o no es válido.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemaGenerico'
+    SinPermiso:
+      description: El rol no permite la operación, o el recurso es de otro usuario.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemaGenerico'
+    NoEncontrado:
+      description: El recurso no existe.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemaGenerico'
+    MetodoNoPermitido:
+      description: |
+        La ruta existe pero no admite el método. `Allow` lista los métodos
+        admitidos. Vale para todas las rutas, por eso no se repite en cada una.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+        Allow:
+          $ref: '#/components/headers/Allow'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemaGenerico'
+    CuerpoDemasiadoGrande:
+      description: El cuerpo supera 1 MiB.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemaGenerico'
+    TipoNoSoportado:
+      description: El `Content-Type` del cuerpo no es `application/json`.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemaGenerico'
+    ErrorInterno:
+      description: Error inesperado de M8. No expone detalles internos.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemaGenerico'
+    ServicioNoDisponible:
+      description: La base de M8 no está disponible.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+        Retry-After:
+          $ref: '#/components/headers/RetryAfter'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemaGenerico'
+
+    # Errores de dominio: type propio.
+    Conflicto:
+      description: El estado del recurso no admite la operación.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problema'
+    NoProcesable:
+      description: |
+        Formato correcto pero la regla de negocio no se cumple (por ejemplo, un
+        QR expirado), o se reusó una clave de idempotencia con otro cuerpo.
+      headers:
+        X-Request-Id:
+          $ref: '#/components/headers/XRequestId'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problema'
 
   schemas:
-    HealthResponseDto:
+    Problema:
       type: object
-      required:
-        - status
-        - timestamp
+      description: Error según RFC 9457.
+      required: [type, title, status]
       properties:
+        type:
+          type: string
+          format: uri-reference
+          description: Identifica el tipo de error.
+          examples: ['/errores/qr-usado']
+        title:
+          type: string
+          examples: ['El QR ya fue usado']
+        status:
+          type: integer
+          minimum: 400
+          maximum: 599
+        detail:
+          type: string
+        instance:
+          type: string
+          format: uri-reference
+
+    ProblemaGenerico:
+      description: |
+        Error genérico; el `title` es la frase del código HTTP en español:
+        `Solicitud inválida` (400), `No autenticado` (401), `Sin permiso` (403),
+        `No encontrado` (404), `Método no permitido` (405), `Cuerpo demasiado
+        grande` (413), `Tipo de contenido no soportado` (415), `Error interno`
+        (500) y `Servicio no disponible` (503).
+      allOf:
+        - $ref: '#/components/schemas/Problema'
+        - type: object
+          properties:
+            type:
+              const: about:blank
+            title:
+              examples: ['No encontrado']
+
+    Salud:
+      type: object
+      required: [estado]
+      properties:
+        estado:
+          type: string
+          enum: [DISPONIBLE, DEGRADADO]
+          example: DISPONIBLE
         status:
           type: string
           example: ok
+        modulo:
+          type: string
+          example: M8 - Notificaciones, Documentos y Soporte
+        uptimeSegundos:
+          type: integer
+          example: 1420
         timestamp:
           type: string
           format: date-time
-        module:
-          type: string
-          example: M8 - Notificaciones, Documentos y Soporte
-        uptimeSeconds:
+          example: "2026-10-27T15:00:00.000Z" 
+
+    Pagina:
+      type: object
+      required: [page, size, totalElementos, totalPaginas]
+      properties:
+        page:
+          type: integer
+          minimum: 0
+        size:
+          type: integer
+          minimum: 1
+        totalElementos:
+          type: integer
+          minimum: 0
+        totalPaginas:
+          type: integer
+          minimum: 0
+
+    Canal:
+      type: string
+      enum: [EMAIL, SMS, PUSH]
+
+    RolDestinatario:
+      type: string
+      enum: [CLIENTE, CONDUCTOR]
+
+    Importe:
+      type: object
+      additionalProperties: false
+      required: [monto, moneda]
+      properties:
+        monto:
           type: number
-          example: 1420
+          minimum: 0
+        moneda:
+          type: string
+          description: Código ISO 4217.
+          pattern: '^[A-Z]{3}$'
+          examples: ['ARS']
+
+    TipoEvento:
+      type: string
+      description: |
+        Hitos que M8 sabe procesar. Los de viaje cubren RF-8.1 y los de reserva
+        RF-8.2 (`RESERVA_VENCIDA` es el aviso de reserva que no se pudo cumplir,
+        RF-9.11). Los de pago disparan el comprobante (RF-8.4).
+      enum:
+        - VIAJE_SOLICITADO
+        - VIAJE_ASIGNADO
+        - VIAJE_ARRIBO_CONDUCTOR
+        - VIAJE_INICIADO
+        - VIAJE_CANCELADO
+        - VIAJE_FINALIZADO
+        - RESERVA_CREADA
+        - RESERVA_MODIFICADA
+        - RESERVA_CONFIRMADA
+        - RESERVA_RECORDATORIO
+        - RESERVA_ACTIVADA
+        - RESERVA_CANCELADA
+        - RESERVA_VENCIDA
+        - PAGO_CAPTURADO
+        - REINTEGRO_REGISTRADO
+
+    ModuloOrigen:
+      type: string
+      enum: [M5, M6, M7, M9]
+
+    Destinatario:
+      type: object
+      additionalProperties: false
+      required: [usuarioId, rol]
+      description: |
+        A quién avisar. El contacto lo informa quien emite el evento, porque M8
+        no consulta a otros módulos para obtenerlo. Si no hay ningún contacto que
+        sirva para los canales disponibles, la notificación queda en `FALLIDA`.
+      properties:
+        usuarioId:
+          type: string
+          format: uuid
+        rol:
+          $ref: '#/components/schemas/RolDestinatario'
+        email:
+          type: string
+          format: email
+        telefono:
+          type: string
+          description: Formato E.164.
+          pattern: '^\+[1-9][0-9]{6,14}$'
+        canalesPreferidos:
+          type: array
+          description: En orden de preferencia. Si falta, M8 usa su canal por defecto.
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/Canal'
+
+    DetalleEvento:
+      type: object
+      additionalProperties: false
+      description: Datos que M8 necesita para redactar el aviso o el comprobante.
+      properties:
+        origen:
+          type: string
+          maxLength: 255
+        destino:
+          type: string
+          maxLength: 255
+        fechaProgramada:
+          type: string
+          format: date-time
+          description: Fecha y hora de la reserva.
+        zonaHoraria:
+          type: string
+          description: Zona horaria IANA.
+          examples: ['America/Argentina/Buenos_Aires']
+        tipoVehiculo:
+          type: string
+          enum: [AUTO, MOTO]
+        motivo:
+          type: string
+          maxLength: 500
+          description: Motivo de una cancelación o de un vencimiento.
+        importe:
+          $ref: '#/components/schemas/Importe'
+
+    EventoEntrada:
+      type: object
+      additionalProperties: false
+      required: [eventoId, tipo, origen, ocurridoEn, destinatarios]
+      anyOf:
+        - required: [viajeId]
+        - required: [reservaId]
+        - required: [pagoId]
+      properties:
+        eventoId:
+          type: string
+          format: uuid
+          description: Lo genera quien emite el evento. Es la clave de idempotencia.
+        tipo:
+          $ref: '#/components/schemas/TipoEvento'
+        origen:
+          $ref: '#/components/schemas/ModuloOrigen'
+        ocurridoEn:
+          type: string
+          format: date-time
+        viajeId:
+          type: string
+          format: uuid
+        reservaId:
+          type: string
+          format: uuid
+        pagoId:
+          type: string
+          format: uuid
+        destinatarios:
+          type: array
+          minItems: 1
+          maxItems: 5
+          items:
+            $ref: '#/components/schemas/Destinatario'
+        detalle:
+          $ref: '#/components/schemas/DetalleEvento'
+
+    EventoRecibido:
+      type: object
+      required: [eventoId, recibidoEn]
+      properties:
+        eventoId:
+          type: string
+          format: uuid
+        recibidoEn:
+          type: string
+          format: date-time
+
+    EstadoNotificacion:
+      type: string
+      description: |
+        PENDIENTE: todavía tiene intentos por hacer. ENVIADA: algún intento fue
+        exitoso. FALLIDA: se agotaron los intentos automáticos.
+      enum: [PENDIENTE, ENVIADA, FALLIDA]
+
+    Referencia:
+      type: object
+      additionalProperties: false
+      required: [tipo, id]
+      properties:
+        tipo:
+          type: string
+          enum: [VIAJE, RESERVA, PAGO]
+        id:
+          type: string
+          format: uuid
+
+    NotificacionNueva:
+      type: object
+      additionalProperties: false
+      required: [destinatarioId, rol, canal, asunto, mensaje]
+      properties:
+        destinatarioId:
+          type: string
+          format: uuid
+        rol:
+          $ref: '#/components/schemas/RolDestinatario'
+        canal:
+          $ref: '#/components/schemas/Canal'
+        asunto:
+          type: string
+          minLength: 1
+          maxLength: 150
+        mensaje:
+          type: string
+          minLength: 1
+          maxLength: 1000
+        referencia:
+          $ref: '#/components/schemas/Referencia'
+
+    Notificacion:
+      type: object
+      required: [notificacionId, destinatarioId, canal, asunto, estado, intentos, creadoEn]
+      properties:
+        notificacionId:
+          type: string
+          format: uuid
+        eventoId:
+          type: string
+          format: uuid
+          description: Evento que la originó. Falta en las manuales y en los reenvíos.
+        tipoEvento:
+          $ref: '#/components/schemas/TipoEvento'
+        destinatarioId:
+          type: string
+          format: uuid
+        canal:
+          $ref: '#/components/schemas/Canal'
+        asunto:
+          type: string
+        estado:
+          $ref: '#/components/schemas/EstadoNotificacion'
+        intentos:
+          type: integer
+          minimum: 0
+          description: Cantidad de intentos realizados.
+        referencia:
+          $ref: '#/components/schemas/Referencia'
+        creadoEn:
+          type: string
+          format: date-time
+        enviadoEn:
+          type: string
+          format: date-time
+        ultimoError:
+          type: string
+          description: Motivo del último intento fallido, sin datos personales.
+
+    PaginaNotificaciones:
+      allOf:
+        - $ref: '#/components/schemas/Pagina'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/Notificacion'
+
+    Intento:
+      type: object
+      required: [numero, resultado, realizadoEn]
+      properties:
+        numero:
+          type: integer
+          minimum: 1
+        canal:
+          $ref: '#/components/schemas/Canal'
+        resultado:
+          type: string
+          enum: [EXITO, ERROR]
+        error:
+          type: string
+          description: Solo si el resultado es `ERROR`. Sin datos personales.
+        realizadoEn:
+          type: string
+          format: date-time
+
+    PaginaIntentos:
+      allOf:
+        - $ref: '#/components/schemas/Pagina'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/Intento'
+
+    QrNuevo:
+      type: object
+      additionalProperties: false
+      required: [clienteId]
+      properties:
+        clienteId:
+          type: string
+          format: uuid
+        validezSegundos:
+          type: integer
+          minimum: 30
+          maximum: 3600
+          default: 600
+          description: Tiempo de vida del QR.
+
+    Qr:
+      type: object
+      required: [qrId, viajeId, estado, token, imagenPng, expiraEn]
+      properties:
+        qrId:
+          type: string
+          format: uuid
+        viajeId:
+          type: string
+          format: uuid
+        estado:
+          type: string
+          enum: [VIGENTE, USADO, EXPIRADO, REEMPLAZADO]
+        token:
+          type: string
+          description: Valor opaco que lleva el QR. No contiene datos del viaje ni del usuario.
+        imagenPng:
+          type: string
+          contentEncoding: base64
+          contentMediaType: image/png
+          description: Imagen del QR en base64 puro.
+        qrDataUrl:
+          type: string
+          description: Data URL (data:image/png;base64,...) lista para incrustar directamente en tags <img> del frontend.
+          example: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA..."
+        expiraEn:
+          type: string
+          format: date-time
+
+    ValidacionQrNueva:
+      type: object
+      additionalProperties: false
+      required: [token, viajeId]
+      properties:
+        token:
+          type: string
+          minLength: 1
+          maxLength: 256
+        viajeId:
+          type: string
+          format: uuid
+
+    ValidacionQr:
+      type: object
+      required: [qrId, viajeId, usadoEn]
+      properties:
+        qrId:
+          type: string
+          format: uuid
+        viajeId:
+          type: string
+        usadoEn:
+          type: string
+          format: date-time
+        valido:
+          type: boolean
+          example: true
+          description: Resultado de la validación atómica.
+        mensaje:
+          type: string
+          example: "Código QR validado y consumido exitosamente" 
+
+    Comprobante:
+      type: object
+      required: [comprobanteId, viajeId, clienteId, motivo, estado, creadoEn]
+      properties:
+        comprobanteId:
+          type: string
+          description: Identificador único del comprobante (UUID).
+          example: 7c9e6679-7425-40de-944b-e07fc1f90ae7
+        codigoComprobante:
+          type: string
+          description: Código amigable del comprobante (ej. REC-2026-00001).
+          example: REC-2026-00001
+        viajeId:
+          type: string
+          description: Identificador del viaje asociado.
+          example: trip-uuid-1001
+        pagoId:
+          type: string
+          description: Identificador del pago en M7 (si aplica).
+          example: pay-uuid-2002
+        clienteId:
+          type: string
+          description: Identificador del pasajero.
+          example: usr-uuid-3003
+        clienteEmail:
+          type: string
+          format: email
+          description: Correo de contacto del pasajero.
+          example: pasajero@ejemplo.com
+        conductorNombre:
+          type: string
+          description: Nombre del conductor asignado.
+          example: Martín García
+        motivo:
+          type: string
+          description: Causa de emisión del comprobante.
+          enum: [FINALIZACION_VIAJE, PAGO, REINTEGRO]
+        estado:
+          type: string
+          description: |
+            PENDIENTE: todavía no se generó el PDF. GENERADO: listo para
+            descargar. ERROR: no se pudo generar.
+          enum: [PENDIENTE, GENERADO, ERROR]
+        importe:
+          $ref: '#/components/schemas/Importe'
+        emitidoEn:
+          type: string
+          format: date-time
+          description: Fecha de emisión del comprobante.
+        urlPdf:
+          type: string
+          format: uri
+          description: URL o endpoint relativo de descarga directa del PDF.
+        creadoEn:
+          type: string
+          format: date-time
+
+    PaginaComprobantes:
+      allOf:
+        - $ref: '#/components/schemas/Pagina'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/Comprobante'
+
+    ReenvioComprobante:
+      type: object
+      additionalProperties: false
+      required: [canal]
+      properties:
+        canal:
+          $ref: '#/components/schemas/Canal'
+
+    EstadoTicket:
+      type: string
+      enum: [ABIERTO, EN_REVISION, RESUELTO, CERRADO]
+
+    TipoReferenciaTicket:
+      type: string
+      enum: [VIAJE, RESERVA, PAGO]
+
+    TicketNuevo:
+      type: object
+      additionalProperties: false
+      required: [referencia, titulo, descripcion]
+      properties:
+        referencia:
+          $ref: '#/components/schemas/Referencia'
+        titulo:
+          type: string
+          minLength: 1
+          maxLength: 150
+          example: Reclamo por cobro indebido
+        descripcion:
+          type: string
+          minLength: 1
+          maxLength: 2000
+          example: Se aplicó un cargo adicional sin justificación en el viaje indicado.
+        usuarioId:
+          type: string
+          description: |
+            Identificador del usuario autor (opcional en el body; si se proporciona token Bearer,
+            se extrae prioritariamente del claim `sub` del JWT).
+          example: usr-uuid-3003
+        prioridad:
+          $ref: '#/components/schemas/PrioridadTicket'
+
+    Ticket:
+      type: object
+      required: [ticketId, usuarioId, rol, referencia, titulo, descripcion, estado, creadoEn, actualizadoEn]
+      properties:
+        ticketId:
+          type: string
+          description: Identificador único del ticket (UUID).
+          example: tck-uuid-5001
+        codigoTicket:
+          type: string
+          description: Número amigable de ticket (ej. TCK-2026-A1B2C3).
+          example: TCK-2026-A1B2C3
+        usuarioId:
+          type: string
+          description: Identificador del usuario creador.
+          example: usr-uuid-3003
+        rol:
+          $ref: '#/components/schemas/RolDestinatario'
+        referencia:
+          $ref: '#/components/schemas/Referencia'
+        titulo:
+          type: string
+          example: Reclamo por cobro indebido
+        descripcion:
+          type: string
+          example: Se aplicó un cargo adicional sin justificación.
+        estado:
+          $ref: '#/components/schemas/EstadoTicket'
+        prioridad:
+          $ref: '#/components/schemas/PrioridadTicket'
+        resolucion:
+          type: string
+          example: Cargo bonificado tras verificación técnica.
+        asignadoA:
+          type: string
+          description: Identificador del operador asignado para resolución.
+          example: op-uuid-8001
+        creadoEn:
+          type: string
+          format: date-time
+        actualizadoEn:
+          type: string
+          format: date-time
+        cerradoEn:
+          type: string
+          format: date-time
+
+    PaginaTickets:
+      allOf:
+        - $ref: '#/components/schemas/Pagina'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/Ticket'
+
+    TicketCambioEstado:
+      type: object
+      additionalProperties: false
+      required: [estado]
+      properties:
+        estado:
+          $ref: '#/components/schemas/EstadoTicket'
+        resolucion:
+          type: string
+          maxLength: 1000
+          description: Obligatoria al pasar a `RESUELTO`.
+        motivo:
+          type: string
+          maxLength: 500
+
+    CambioTicket:
+      type: object
+      required: [estadoNuevo, actorId, cambiadoEn]
+      properties:
+        estadoAnterior:
+          $ref: '#/components/schemas/EstadoTicket'
+        estadoNuevo:
+          $ref: '#/components/schemas/EstadoTicket'
+        actorId:
+          type: string
+          description: Sub del token de quien hizo el cambio.
+        motivo:
+          type: string
+        cambiadoEn:
+          type: string
+          format: date-time
+
+    PaginaHistorialTicket:
+      allOf:
+        - $ref: '#/components/schemas/Pagina'
+        - type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items:
+                $ref: '#/components/schemas/CambioTicket'
+
+    PrioridadTicket:
+      type: string
+      enum: [BAJA, MEDIA, ALTA, URGENTE]
+      default: MEDIA
+
+    ComprobanteNuevo:
+      type: object
+      required: [viajeId, clienteId, importe]
+      properties:
+        viajeId:
+          type: string
+          description: Identificador del viaje asociado
+          example: trip-uuid-1001
+        pagoId:
+          type: string
+          description: Identificador del pago en M7 (si aplica)
+          example: pay-uuid-2002
+        clienteId:
+          type: string
+          description: Identificador del pasajero/cliente
+          example: usr-uuid-3003
+        clienteEmail:
+          type: string
+          format: email
+          description: Correo del cliente para envío de comprobante
+          example: pasajero@ejemplo.com
+        conductorNombre:
+          type: string
+          description: Nombre del conductor asignado
+          example: Martín García
+        motivo:
+          type: string
+          enum: [FINALIZACION_VIAJE, PAGO, REINTEGRO]
+          default: FINALIZACION_VIAJE
+        importe:
+          $ref: '#/components/schemas/Importe'
 
     ErrorResponseDto:
       type: object
-      required:
-        - statusCode
-        - message
-        - error
+      description: Formato alternativo de error NestJS compatible.
       properties:
         statusCode:
           type: integer
           example: 400
         message:
-          oneOf:
-            - type: string
-            - type: array
-              items:
-                type: string
-          example: Datos de entrada inválidos
+          type: string
+          example: Solicitud inválida
         error:
           type: string
           example: Bad Request
         timestamp:
           type: string
           format: date-time
-          example: "2026-10-22T14:30:00.000Z"
         path:
           type: string
-          example: /api/v1/documents/qr/verify
-
-    SendNotificationDto:
-      type: object
-      required:
-        - channel
-        - recipient
-        - subject
-        - content
-      properties:
-        channel:
-          type: string
-          enum: [EMAIL, PUSH, SMS]
-          example: EMAIL
-        recipient:
-          type: string
-          example: pasajero@ejemplo.com
-        subject:
-          type: string
-          example: Tu conductor está en camino
-        content:
-          type: string
-          example: Martín (Toyota Corolla - AB123CD) llegará en aproximadamente 5 minutos.
-        referenceId:
-          type: [string, "null"]
-          example: trip-9082
-        referenceType:
-          type: [string, "null"]
-          enum: [TRIP, RESERVATION, PAYMENT, null]
-          example: TRIP
-
-    SendNotificationResponseDto:
-      type: object
-      properties:
-        success:
-          type: boolean
-          example: true
-        id:
-          type: string
-          example: notif-uuid-4481
-        status:
-          type: string
-          enum: [SENT, FAILED, PENDING]
-          example: SENT
-
-    NotificationLogDto:
-      type: object
-      properties:
-        id:
-          type: string
-          example: notif-uuid-4481
-        channel:
-          type: string
-          enum: [EMAIL, PUSH, SMS]
-          example: EMAIL
-        recipient:
-          type: string
-          example: pasajero@ejemplo.com
-        subject:
-          type: string
-          example: Tu conductor está en camino
-        status:
-          type: string
-          enum: [PENDING, SENT, FAILED]
-          example: SENT
-        retryCount:
-          type: integer
-          example: 0
-        referenceId:
-          type: [string, "null"]
-          example: trip-9082
-        referenceType:
-          type: [string, "null"]
-          example: TRIP
-        createdAt:
-          type: string
-          format: date-time
-
-    GenerateQrDto:
-      type: object
-      required:
-        - tripId
-        - passengerId
-      properties:
-        tripId:
-          type: string
-          example: trip-9082
-        passengerId:
-          type: string
-          example: usr-pass-456
-        ttlSeconds:
-          type: integer
-          default: 300
-          example: 300
-
-    QrResponseDto:
-      type: object
-      properties:
-        token:
-          type: string
-          example: qr_trip-9082_a1b2c3d4e5f67890
-        tripId:
-          type: string
-          example: trip-9082
-        qrDataUrl:
-          type: string
-          description: DataURL Base64 para renderizar la imagen PNG del QR
-        expiresAt:
-          type: string
-          format: date-time
-        ttlSeconds:
-          type: integer
-          example: 300
-
-    VerifyQrDto:
-      type: object
-      required:
-        - token
-        - tripId
-      properties:
-        token:
-          type: string
-          example: qr_trip-9082_a1b2c3d4e5f67890
-        tripId:
-          type: string
-          example: trip-9082
-
-    VerifyQrResponseDto:
-      type: object
-      properties:
-        valid:
-          type: boolean
-          example: true
-        tripId:
-          type: string
-          example: trip-9082
-        token:
-          type: string
-          example: qr_trip-9082_a1b2c3d4e5f67890
-        verifiedAt:
-          type: string
-          format: date-time
-        message:
-          type: string
-          example: Código QR verificado exitosamente. Inicio de viaje habilitado.
-
-    RegisterReceiptDto:
-      type: object
-      required:
-        - tripId
-        - passengerId
-        - passengerEmail
-        - amount
-      properties:
-        tripId:
-          type: string
-          example: trip-9082
-        passengerId:
-          type: string
-          example: usr-pass-456
-        passengerEmail:
-          type: string
-          format: email
-          example: pasajero@ejemplo.com
-        amount:
-          type: number
-          example: 4500.50
-        currency:
-          type: string
-          default: ARS
-          example: ARS
-        driverName:
-          type: [string, "null"]
-          example: Martín Conductor
-
-    ReceiptResponseDto:
-      type: object
-      properties:
-        id:
-          type: string
-          example: rec-uuid-1001
-        receiptCode:
-          type: string
-          example: REC-2026-00042
-        tripId:
-          type: string
-          example: trip-9082
-        passengerId:
-          type: string
-          example: usr-pass-456
-        passengerEmail:
-          type: string
-          example: pasajero@ejemplo.com
-        amount:
-          type: number
-          example: 4500.50
-        currency:
-          type: string
-          example: ARS
-        driverName:
-          type: [string, "null"]
-          example: Martín Conductor
-        issuedAt:
-          type: string
-          format: date-time
-
-    ResendReceiptDto:
-      type: object
-      required:
-        - tripId
-        - email
-      properties:
-        tripId:
-          type: string
-          example: trip-9082
-        email:
-          type: string
-          format: email
-          example: pasajero@ejemplo.com
-
-    ResendReceiptResponseDto:
-      type: object
-      properties:
-        success:
-          type: boolean
-          example: true
-        tripId:
-          type: string
-          example: trip-9082
-        receiptCode:
-          type: string
-          example: REC-2026-00042
-        sentTo:
-          type: string
-          example: pasajero@ejemplo.com
-        timestamp:
-          type: string
-          format: date-time
-
-    CreateTicketDto:
-      type: object
-      required:
-        - referenceId
-        - referenceType
-        - subject
-        - description
-        - createdBy
-      properties:
-        referenceId:
-          type: string
-          example: trip-9082
-        referenceType:
-          type: string
-          enum: [TRIP, RESERVATION, PAYMENT, OTHER]
-          example: TRIP
-        subject:
-          type: string
-          example: Diferencia de cobro en peajes
-        description:
-          type: string
-          example: El conductor me cobró peajes no contemplados en la tarifa estimada.
-        createdBy:
-          type: string
-          example: usr-pass-456
-
-    UpdateTicketStatusDto:
-      type: object
-      required:
-        - status
-      properties:
-        status:
-          type: string
-          enum: [OPEN, IN_PROGRESS, RESOLVED, CLOSED]
-          example: RESOLVED
-        resolutionNote:
-          type: [string, "null"]
-          example: Se acreditó reintegro por peaje indebido.
-
-    TicketResponseDto:
-      type: object
-      properties:
-        id:
-          type: string
-          example: tck-uuid-5001
-        ticketNumber:
-          type: string
-          example: TCK-2026-1001
-        referenceId:
-          type: string
-          example: trip-9082
-        referenceType:
-          type: string
-          enum: [TRIP, RESERVATION, PAYMENT, OTHER]
-          example: TRIP
-        subject:
-          type: string
-          example: Diferencia de cobro en peajes
-        description:
-          type: string
-          example: El conductor me cobró peajes no contemplados en la tarifa estimada.
-        status:
-          type: string
-          enum: [OPEN, IN_PROGRESS, RESOLVED, CLOSED]
-          example: OPEN
-        priority:
-          type: string
-          enum: [LOW, MEDIUM, HIGH, URGENT]
-          example: MEDIUM
-        createdBy:
-          type: string
-          example: usr-pass-456
-        assignedTo:
-          type: [string, "null"]
-          example: op-soporte-01
-        resolutionNote:
-          type: [string, "null"]
-          example: null
-        createdAt:
-          type: string
-          format: date-time
-        updatedAt:
-          type: string
-          format: date-time
+          example: /api/v1/comprobantes
 
     # ─── Eventos Asíncronos Consumidos (RabbitMQ) ─────────────────────────────
     TripAssignedEvent:

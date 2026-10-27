@@ -10,7 +10,8 @@
 - [Arquitectura de Software (Hexagonal)](ARQUITECTURA.md): Justificación técnica, desacoplamiento y modelo en capas.
 - [Organización de Roles y Células](ROLES.md): Distribución de responsabilidades para los 9 integrantes (1 Tech Lead + 4 células de 2 personas).
 - [Guía de Gestión en Teams y Trello](GUIA_COLABORADORES.md): Canales de comunicación y tablero Kanban del equipo.
-- [Especificación OpenAPI 3.0](packages/contracts/openapi.yaml): Contrato formal de interfaces de M8.
+- [Especificación OpenAPI 3.1 Unificada](packages/contracts/openapi.yaml): Contrato formal consolidado y consensuado entre el Grupo 10 y el Grupo 7.
+- [Propuesta de Unificación Inter-Grupos](PROPUESTA_UNIFICACION_M8.md): Acuerdo de compatibilidad e integración de M8 con el Grupo 7.
 
 ---
 

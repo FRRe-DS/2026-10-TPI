@@ -193,9 +193,17 @@ Escriban commits claros en presente:
 ### 6. Respetar la Arquitectura Hexagonal
 El backend está separado en capas (`domain`, `application`, `infrastructure`).
 - **El Dominio es sagrado**: No importen librerías de base de datos ni cosas de NestJS dentro de `domain/`.
-- Ante cualquier duda de cómo estructurar un archivo, revisen [ARCHITECTURE.md](ARCHITECTURE.md).
+- Ante cualquier duda de cómo estructurar un archivo, revisen [ARQUITECTURA.md](ARQUITECTURA.md).
+
+### 7. Contrato OpenAPI 3.1 Unificado (Interoperabilidad con Grupo 7)
+El Módulo 8 cuenta con un contrato formal unificado y acordado entre el Grupo 10 y el Grupo 7 ([`packages/contracts/openapi.yaml`](packages/contracts/openapi.yaml)):
+- **Rutas Canónicas**: Las rutas públicas oficiales son en español (`/api/v1/notificaciones`, `/api/v1/comprobantes`, `/api/v1/tickets`, `/api/v1/viajes/:viajeId/qr`), acordes al enunciado de la cátedra.
+- **Rutas Bivalentes**: Nuestros controladores de NestJS exponen decoradores multi-ruta para dar soporte simultáneo a las rutas canónicas y a las rutas legacy que consume nuestro Dashboard React en [`apps/frontend`](apps/frontend).
+- **Descarga Polimórfica de Comprobantes**: `GET /api/v1/comprobantes/:comprobanteId/pdf` acepta indistintamente el UUID del comprobante o el identificador del viaje (`viajeId` / `tripId`).
+- **Ingestión de Eventos**: Soporte dual mediante `POST /api/v1/eventos` para TP1 y consumidores RabbitMQ para TP2.
+- **Documentación Swagger Interactiva**: La especificación viva se puede probar en cualquier momento en [http://localhost:3000/api/docs](http://localhost:3000/api/docs). Para más contexto sobre el acuerdo, revisar [`PROPUESTA_UNIFICACION_M8.md`](PROPUESTA_UNIFICACION_M8.md).
 
 ---
 
-##  ¿Te trabaste o tienes un error?
-  Avisame si te falla algo crack
+## 🆘 ¿Te trabaste o tienes un error?
+Avisame por Teams en el canal de la célula o por privado si te falla algo crack.

@@ -13,7 +13,7 @@ Para garantizar **modulación coherente, bajo acoplamiento y alta testabilidad**
 - **Lenguaje Transversal**: TypeScript en Backend y Frontend para coherencia y tipado de extremo a extremo.
 - **Backend Framework**: NestJS, elegido por su sistema de módulos encapsulados (`@Module`), contenedor de inyección de dependencias nativo y soporte de microservicios.
 - **Frontend Dashboard**: React + Vite para operaciones internas (gestión de tickets de soporte, tracking de avisos y validación de QR).
-- **Contratos Formales**: Especificación OpenAPI 3.1 en `contratos/m8_notificaciones/openapi.yml` y `packages/contracts/openapi.yaml`, con tipos TypeScript compartidos en `packages/contracts`.
+- **Contratos Formales**: Especificación OpenAPI 3.1 Unificada y Consolidada (acordada formalmente entre el Grupo 10 y el Grupo 7) en `contratos/m8_notificaciones/openapi.yml` y `packages/contracts/openapi.yaml`, con tipos TypeScript y esquemas AMQP compartidos en `packages/contracts` y detalle en `PROPUESTA_UNIFICACION_M8.md`.
 
 ---
 
@@ -166,4 +166,37 @@ El repositorio cuenta con un pipeline automatizado de GitHub Actions configurado
 4. **Ejecución del 100% de la suite de pruebas unitarias y de integración** (`npm run test`).
 5. **Compilación de todos los workspaces** (`npm run build`).
 6. **Validación de reproducibilidad del contenedor Docker** (`docker build -t g10-m8-backend:test .`).
+
+---
+
+## 8. Acuerdo de Integración Inter-Grupos y Contrato Unificado (Grupo 10 + Grupo 7)
+
+Para garantizar la interoperabilidad con los demás módulos (M1 a M7 y M9) exigida por la cátedra (**RNF-02, RNF-03**), el Grupo 10 y el Grupo 7 consolidaron sus especificaciones en un **Contrato OpenAPI 3.1 Unificado Oficial** ([`packages/contracts/openapi.yaml`](packages/contracts/openapi.yaml) y [`contratos/m8_notificaciones/openapi.yml`](contratos/m8_notificaciones/openapi.yml)).
+
+Este acuerdo se fundamenta en la propuesta documentada en [`PROPUESTA_UNIFICACION_M8.md`](PROPUESTA_UNIFICACION_M8.md) y se rige por los siguientes principios arquitectónicos:
+
+### 8.1. Convención de Ruteo e Idioma Canónico
+- **Rutas Públicas Oficiales en Español (`/api/v1/...`)**: Se adopta el vocabulario de dominio del enunciado oficial (`/api/v1/notificaciones`, `/api/v1/comprobantes`, `/api/v1/tickets`, `/api/v1/viajes/{viajeId}/qr`).
+- **Arquitectura de Rutas Bivalentes en NestJS**: Para no romper el Dashboard Frontend existente ni los tests unitarios previos, los controladores de infraestructura exponen rutas bivalentes mediante decoradores multi-ruta:
+  ```typescript
+  @Controller(['api/v1/tickets', 'support/tickets'])
+  export class SupportController { ... }
+  ```
+  Esto permite responder tanto a las peticiones externas de los demás módulos de la plataforma como a las llamadas internas del dashboard visual sin sobrecosto de mantenimiento.
+
+### 8.2. Ingestión Dual de Eventos (RF-8.1, RF-8.2, RF-8.8)
+- **Canal HTTP Síncrono/Asíncrono (`POST /api/v1/eventos`)**: Permite que M5, M6, M7 y M9 envíen hitos de viaje, reserva o pago mediante peticiones HTTP que responden de forma inmediata `202 Accepted` sin bloquear al emisor. Esencial para la etapa TP1 antes de contar con un broker federado inter-máquinas.
+- **Canal AMQP Desacoplado (RabbitMQ)**: Se mantiene el catálogo formal de esquemas de eventos en `components/schemas` (`TripCompletedEvent`, `PaymentCapturedEvent`, `ReservationConfirmedEvent`, etc.) consumidos por el adaptador `trip-completed.consumer.ts` para la etapa TP2.
+
+### 8.3. Ciclo de Vida Polimórfico de Comprobantes (RF-8.4, RF-8.5)
+- **Descarga Polimórfica (`GET /api/v1/comprobantes/{comprobanteId}/pdf`)**: El parámetro de ruta resuelve indistintamente si el cliente envía el UUID del comprobante o el identificador del viaje (`viajeId` / `tripId`). Esto elimina la necesidad de realizar consultas previas de búsqueda desde M6 o desde la app del pasajero.
+- **Emisión Dual**: Generación automática reactiva ante eventos de viaje o pago, sumada al endpoint síncrono `POST /api/v1/comprobantes` como fallback operativo y de pruebas.
+
+### 8.4. Identidad Híbrida en Soporte y Reclamos (RF-8.7)
+- **Prioridad JWT Bearer**: Si la solicitud incluye el token Bearer emitido por M1, la identidad del autor (`usuarioId`) y su `rol` se extraen obligatoriamente del claim `sub` y scopes del token, previniendo suplantación de identidad (RNF-12).
+- **Fallback en Desarrollo**: Para pruebas locales aisladas o desde Swagger sin M1 activo, se admite el atributo opcional `usuarioId` en el cuerpo de `TicketNuevo`.
+
+### 8.5. Estandarización de Errores con RFC 9457
+- Toda la API responde errores con la estructura formal de **RFC 9457 Problem Details** (`application/problem+json`), formateada a través de un `ProblemDetailsExceptionFilter` global en NestJS.
+
 

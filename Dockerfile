@@ -6,6 +6,9 @@
 # Stage 1: Build & Dependencies
 FROM node:20-alpine AS builder
 
+# OpenSSL es necesario para que Prisma detecte la versión correcta de su motor
+RUN apk add --no-cache openssl
+
 WORKDIR /app
 
 # Copiar archivos de dependencias del monorepo
@@ -29,6 +32,9 @@ RUN npm run build --workspace=@g10-m8/contracts && \
 
 # Stage 2: Production Runtime
 FROM node:20-alpine AS runner
+
+# OpenSSL es necesario para que Prisma cargue su motor en tiempo de ejecución
+RUN apk add --no-cache openssl
 
 WORKDIR /app
 

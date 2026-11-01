@@ -63,6 +63,32 @@ services:
       - '1025:1025' # Servidor SMTP
       - '8025:8025' # Web UI para ver emails (http://localhost:8025)
 
+  # Backend M8 (API NestJS) como contenedor
+  backend:
+    build: .                          # Construye la imagen con el Dockerfile de la raíz
+    container_name: g10_m8_backend
+    restart: unless-stopped
+    env_file:
+      - .env                          # Carga todas las variables de tu .env
+    environment:                      # Pisa solo estas: dentro de Docker, usa nombres de servicio
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/m8_db
+      DIRECT_URL: postgresql://postgres:postgres@postgres:5432/m8_db
+      REDIS_HOST: redis
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+      SMTP_HOST: mailpit
+      SMTP_PORT: 1025
+    ports:
+      - '3000:3000'                   # Tu PC:3000 -> contenedor:3000
+    depends_on:                       # Espera a que las dependencias estén listas
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      mailpit:
+        condition: service_started    # Mailpit no tiene healthcheck
+
 volumes:
   postgres_data:
   redis_data:

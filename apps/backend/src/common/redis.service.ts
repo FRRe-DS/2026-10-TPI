@@ -18,7 +18,7 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
       lazyConnect: true,
       maxRetriesPerRequest: 1,
       enableOfflineQueue: false,
-      retryStrategy: () => null,
+      retryStrategy: (times) => (times <= 10 ? 1000 : null), // Retry for the first 10 attempts, then stop
     };
 
     try {
@@ -38,8 +38,9 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
         }
       });
 
-      instance.on('end', () => {
-        this.isReady = false;
+      instance.on('ready', () => {
+        this.isReady = true;
+        this.logger.log('Conexión con Redis restaurada (ready)');
       });
 
       await instance.connect();
@@ -109,6 +110,16 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
       } catch (e) {
         // Ignorado si Redis no está disponible
       }
+    }
+  }
+
+  async ping(): Promise<boolean> {
+    if (!this.client || !this.isReady) return false;
+    try {
+      const res = await this.client.ping();
+      return res === 'PONG';
+    } catch {
+      return false;
     }
   }
 

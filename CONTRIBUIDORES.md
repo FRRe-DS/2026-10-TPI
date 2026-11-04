@@ -144,6 +144,30 @@ npx prisma generate --schema=apps/backend/prisma/schema.prisma
   ```
   - Abre en tu navegador: `http://localhost:5173`
 
+### 🐳 Levantar el Sistema Distribuido Completo con Docker Compose (Tema 14)
+
+Para levantar todo el ecosistema local con un único comando (las **2 APIs**, **PostgreSQL**, **Redis con persistencia AOF**, **RabbitMQ** y **Mailpit**, junto con sus redes segmentadas, volúmenes y healthchecks):
+
+```bash
+docker compose up -d --build
+```
+
+1. **Verificar estado de los contenedores y healthchecks:**
+   ```bash
+   docker compose ps
+   ```
+2. **Interfaces y endpoints disponibles:**
+   - **API 1 - Backend M8 (Swagger UI):** [http://localhost:3000/api/docs](http://localhost:3000/api/docs)
+   - **API 1 - Healthcheck profundo (Postgres + Redis):** [http://localhost:3000/api/v1/health](http://localhost:3000/api/v1/health)
+   - **API 2 - Simulador Módulo 6 Viajes (Web UI):** [http://localhost:3001](http://localhost:3001) y [http://localhost:3001/salud](http://localhost:3001/salud)
+   - **Mailpit (Bandeja de entrada de correos):** [http://localhost:8025](http://localhost:8025)
+   - **RabbitMQ Management (Colas y eventos, `guest`/`guest`):** [http://localhost:15672](http://localhost:15672)
+3. **Prueba de reinicio de dependencias y persistencia de volúmenes:**
+   ```bash
+   docker compose restart postgres redis
+   ```
+   Tras el reinicio, el backend recupera automáticamente la conexión y los comprobantes/tokens QR persisten en los volúmenes `postgres_data` y `redis_data`.
+
 ---
 
 ## ⚠️ 4. Indicaciones MUY IMPORTANTES para trabajar (Reglas del Equipo)

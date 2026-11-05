@@ -36,6 +36,12 @@ export class PrismaNotificationLogRepository extends NotificationLogRepositoryPo
     }) as any;
   }
 
+  async findById(id: string): Promise<NotificationLogRecord | null> {
+    return this.prisma.notificationLog.findUnique({
+      where: { id },
+    }) as any;
+  }
+
   async findMany(filters: NotificationLogFilters = {}): Promise<NotificationLogRecord[]> {
     return this.prisma.notificationLog.findMany({
       where: {

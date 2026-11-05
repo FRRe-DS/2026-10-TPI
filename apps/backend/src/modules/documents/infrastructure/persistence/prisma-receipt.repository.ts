@@ -107,6 +107,36 @@ export class PrismaReceiptRepository implements ReceiptRepositoryPort {
     return row ? this.toRecord(row) : null;
   }
 
+  async findByIdOrTripId(idOrTripId: string): Promise<ReceiptRecord | null> {
+    const row = await this.prisma.documentReceipt.findFirst({
+      where: {
+        OR: [
+          { id: idOrTripId },
+          { tripId: idOrTripId },
+          { receiptCode: idOrTripId },
+        ],
+      },
+    });
+    return row ? this.toRecord(row) : null;
+  }
+
+  async findMany(filters?: {
+    viajeId?: string;
+    pagoId?: string;
+    clienteId?: string;
+  }): Promise<ReceiptRecord[]> {
+    const rows = await this.prisma.documentReceipt.findMany({
+      where: {
+        tripId: filters?.viajeId || undefined,
+        paymentId: filters?.pagoId || undefined,
+        passengerId: filters?.clienteId || undefined,
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 100,
+    });
+    return rows.map((row) => this.toRecord(row));
+  }
+
   /**
    * Genera un código de comprobante con entropía criptográfica para evitar colisiones.
    * Formato: REC-YYYY-XXXXXX

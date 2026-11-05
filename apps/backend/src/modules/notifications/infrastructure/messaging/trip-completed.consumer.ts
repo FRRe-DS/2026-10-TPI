@@ -101,6 +101,11 @@ export class TripCompletedConsumer implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
+    if (this.isCoordinatedEventoEntrada(event)) {
+      await this.handleCoordinatedEvent(message, event);
+      return;
+    }
+
     if (!this.isTripCompletedEvent(event)) {
       await this.rejectMalformedMessage(
         message,
@@ -200,6 +205,104 @@ export class TripCompletedConsumer implements OnModuleInit, OnModuleDestroy {
       (payload.driverName === undefined ||
         typeof payload.driverName === 'string')
     );
+  }
+
+  private isCoordinatedEventoEntrada(
+    value: unknown,
+  ): value is {
+    eventoId: string;
+    tipo: string;
+    origen: string;
+    ocurridoEn: string;
+    viajeId?: string;
+    reservaId?: string;
+    pagoId?: string;
+    destinatarios: Array<{
+      usuarioId: string;
+      rol: string;
+      email?: string;
+      telefono?: string;
+      canalesPreferidos?: string[];
+    }>;
+    detalle?: {
+      origen?: string;
+      destino?: string;
+      importe?: { monto: number; moneda: string };
+    };
+  } {
+    if (typeof value !== 'object' || value === null) {
+      return false;
+    }
+    const ev = value as Record<string, unknown>;
+    return (
+      typeof ev.eventoId === 'string' &&
+      typeof ev.tipo === 'string' &&
+      typeof ev.origen === 'string' &&
+      typeof ev.ocurridoEn === 'string' &&
+      Array.isArray(ev.destinatarios) &&
+      ev.destinatarios.length > 0 &&
+      Boolean(ev.viajeId || ev.reservaId || ev.pagoId)
+    );
+  }
+
+  private async handleCoordinatedEvent(
+    message: ConsumeMessage,
+    event: {
+      eventoId: string;
+      tipo: string;
+      origen: string;
+      viajeId?: string;
+      reservaId?: string;
+      pagoId?: string;
+      destinatarios: Array<{
+        usuarioId: string;
+        email?: string;
+        canalesPreferidos?: string[];
+      }>;
+      detalle?: {
+        origen?: string;
+        destino?: string;
+        importe?: { monto: number; moneda: string };
+      };
+    },
+  ): Promise<void> {
+    const dest = event.destinatarios[0];
+    const recipient = dest.email || `${dest.usuarioId}@notificaciones.m8.local`;
+    const referenceId = event.viajeId ?? event.reservaId ?? event.pagoId;
+    const referenceType = event.viajeId
+      ? 'TRIP'
+      : event.reservaId
+        ? 'RESERVATION'
+        : 'PAYMENT';
+
+    try {
+      const result = await this.notificationsService.send(
+        {
+          channel: NotificationChannelDto.EMAIL,
+          recipient,
+          subject: `Notificación de ${event.tipo} (${event.origen})`,
+          content: `Hito ${event.tipo} informado por ${event.origen} para referencia ${referenceId}.`,
+          referenceId,
+          referenceType,
+        },
+        event.eventoId,
+        this.getRetryCount(message) > 0,
+      );
+
+      if (result.success || (result.status === 'FAILED' && !result.retryable)) {
+        this.channel?.ack(message);
+        return;
+      }
+
+      await this.retryOrFail(
+        message,
+        event.eventoId,
+        'proveedor de notificaciones no disponible',
+      );
+    } catch (error) {
+      const details = error instanceof Error ? error.message : String(error);
+      await this.retryOrFail(message, event.eventoId, details);
+    }
   }
 
   private async rejectMalformedMessage(

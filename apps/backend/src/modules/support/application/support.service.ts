@@ -8,6 +8,7 @@ import {
 import { CreateTicketDto, UpdateTicketStatusDto } from './dto/support.dto';
 import {
   SUPPORT_TICKET_REPOSITORY_PORT,
+  SupportTicketHistoryEntry,
   SupportTicketRecord,
   SupportTicketReferenceType,
   SupportTicketRepositoryPort,
@@ -112,5 +113,38 @@ export class SupportService {
       status: target,
       resolutionNote: dto.resolutionNote,
     });
+  }
+
+  /**
+   * Reabre un ticket en estado RESOLVED pasándolo a IN_PROGRESS (EN_REVISION),
+   * según la regla del contrato coordinado definitivo (RESUELTO -> EN_REVISION).
+   */
+  async reopenResolvedTicket(
+    id: string,
+    resolutionNote?: string,
+  ): Promise<SupportTicketRecord> {
+    const existing = await this.findOne(id);
+    if (existing.status !== 'RESOLVED') {
+      throw new BadRequestException(
+        `Solo se puede reabrir un ticket en estado RESUELTO (estado actual: ${existing.status}).`,
+      );
+    }
+    return this.repository.updateStatus(existing.id, {
+      status: 'IN_PROGRESS',
+      resolutionNote: resolutionNote ?? existing.resolutionNote ?? undefined,
+    });
+  }
+
+  async appendHistory(ticketId: string, entry: SupportTicketHistoryEntry): Promise<void> {
+    if (this.repository.appendHistory) {
+      await this.repository.appendHistory(ticketId, entry);
+    }
+  }
+
+  async getHistory(ticketId: string): Promise<SupportTicketHistoryEntry[]> {
+    if (this.repository.getHistory) {
+      return this.repository.getHistory(ticketId);
+    }
+    return [];
   }
 }

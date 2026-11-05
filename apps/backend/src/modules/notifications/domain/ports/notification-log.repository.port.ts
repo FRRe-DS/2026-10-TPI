@@ -29,5 +29,6 @@ export interface NotificationLogFilters {
 export abstract class NotificationLogRepositoryPort {
   abstract create(log: CreateNotificationLog): Promise<Pick<NotificationLogRecord, 'id'>>;
   abstract findByEventId?(eventId: string): Promise<NotificationLogRecord | null>;
+  abstract findById?(id: string): Promise<NotificationLogRecord | null>;
   abstract findMany(filters?: NotificationLogFilters): Promise<NotificationLogRecord[]>;
 }

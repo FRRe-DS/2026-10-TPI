@@ -153,3 +153,146 @@ export class ReceiptResponseDto {
   })
   issuedAt: string;
 }
+
+// ─── DTOs para el Contrato Coordinado Definitivo (G10 + G7) ─────────────────
+
+export class GenerarQrViajeDto {
+  @ApiProperty({ required: false, example: 'usr-p-456', description: 'Identificador del cliente' })
+  @IsString()
+  @IsOptional()
+  clienteId?: string;
+
+  @ApiProperty({ required: false, example: 'usr-p-456', description: 'Alias en inglés de clienteId' })
+  @IsString()
+  @IsOptional()
+  passengerId?: string;
+
+  @ApiProperty({ required: false, example: 600, default: 600, description: 'Validez del QR en segundos' })
+  @IsNumber()
+  @IsOptional()
+  validezSegundos?: number;
+
+  @ApiProperty({ required: false, example: 300, default: 300 })
+  @IsNumber()
+  @IsOptional()
+  ttlSeconds?: number;
+}
+
+export class ValidarQrUnificadoDto {
+  @ApiProperty({ example: 'qr-token-sec-xyz', description: 'Token opaco del código QR' })
+  @IsString()
+  @IsNotEmpty()
+  token: string;
+
+  @ApiProperty({ required: false, example: 'trip-abc-123', description: 'ID del viaje (viajeId)' })
+  @IsString()
+  @IsOptional()
+  viajeId?: string;
+
+  @ApiProperty({ required: false, example: 'trip-abc-123', description: 'Alias en inglés (tripId)' })
+  @IsString()
+  @IsOptional()
+  tripId?: string;
+}
+
+export class ImporteComprobanteDto {
+  @ApiProperty({ example: 3500 })
+  @IsNumber()
+  @IsPositive()
+  @Type(() => Number)
+  monto: number;
+
+  @ApiProperty({ required: false, example: 'ARS', default: 'ARS' })
+  @IsString()
+  @IsOptional()
+  moneda?: string;
+}
+
+export class RegistrarComprobanteUnificadoDto {
+  @ApiProperty({ required: false, example: 'trip-abc-123' })
+  @IsString()
+  @IsOptional()
+  viajeId?: string;
+
+  @ApiProperty({ required: false, example: 'trip-abc-123' })
+  @IsString()
+  @IsOptional()
+  tripId?: string;
+
+  @ApiProperty({ required: false, example: 'pay-uuid-2002' })
+  @IsString()
+  @IsOptional()
+  pagoId?: string;
+
+  @ApiProperty({ required: false, example: 'usr-p-456' })
+  @IsString()
+  @IsOptional()
+  clienteId?: string;
+
+  @ApiProperty({ required: false, example: 'usr-p-456' })
+  @IsString()
+  @IsOptional()
+  passengerId?: string;
+
+  @ApiProperty({ required: false, example: 'pasajero@ejemplo.com' })
+  @IsEmail()
+  @IsOptional()
+  clienteEmail?: string;
+
+  @ApiProperty({ required: false, example: 'pasajero@ejemplo.com' })
+  @IsEmail()
+  @IsOptional()
+  passengerEmail?: string;
+
+  @ApiProperty({ required: false, example: 'Juan Conductor' })
+  @IsString()
+  @IsOptional()
+  conductorNombre?: string;
+
+  @ApiProperty({ required: false, example: 'Juan Conductor' })
+  @IsString()
+  @IsOptional()
+  driverName?: string;
+
+  @ApiProperty({ required: false, example: 'FINALIZACION_VIAJE' })
+  @IsString()
+  @IsOptional()
+  motivo?: string;
+
+  @ApiProperty({ required: false, type: ImporteComprobanteDto })
+  @IsOptional()
+  importe?: ImporteComprobanteDto;
+
+  @ApiProperty({ required: false, example: 3500 })
+  @IsNumber()
+  @IsOptional()
+  @Type(() => Number)
+  amount?: number;
+
+  @ApiProperty({ required: false, example: 'ARS' })
+  @IsString()
+  @IsOptional()
+  currency?: string;
+}
+
+export class ReenviarComprobanteUnificadoDto {
+  @ApiProperty({ required: false, example: 'EMAIL', default: 'EMAIL', enum: ['EMAIL', 'SMS', 'PUSH'] })
+  @IsString()
+  @IsOptional()
+  canal?: string;
+
+  @ApiProperty({ required: false, example: 'pasajero@ejemplo.com' })
+  @IsEmail()
+  @IsOptional()
+  emailDestino?: string;
+
+  @ApiProperty({ required: false, example: 'pasajero@ejemplo.com' })
+  @IsEmail()
+  @IsOptional()
+  email?: string;
+
+  @ApiProperty({ required: false, example: 'trip-abc-123' })
+  @IsString()
+  @IsOptional()
+  tripId?: string;
+}

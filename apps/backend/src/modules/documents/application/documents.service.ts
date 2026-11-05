@@ -53,6 +53,34 @@ export class DocumentsService {
     return this.receiptRepo.findByTripId(tripId);
   }
 
+  /**
+   * Busca un comprobante polimórficamente por comprobanteId (UUID), receiptCode o viajeId (tripId).
+   */
+  async findReceiptByIdOrTripId(idOrTripId: string): Promise<ReceiptRecord | null> {
+    if (this.receiptRepo.findByIdOrTripId) {
+      return this.receiptRepo.findByIdOrTripId(idOrTripId);
+    }
+    return this.receiptRepo.findByTripId(idOrTripId);
+  }
+
+  /**
+   * Lista comprobantes aplicando filtros opcionales.
+   */
+  async findAllReceipts(filters?: {
+    viajeId?: string;
+    pagoId?: string;
+    clienteId?: string;
+  }): Promise<ReceiptRecord[]> {
+    if (this.receiptRepo.findMany) {
+      return this.receiptRepo.findMany(filters);
+    }
+    if (filters?.viajeId) {
+      const found = await this.receiptRepo.findByTripId(filters.viajeId);
+      return found ? [found] : [];
+    }
+    return [];
+  }
+
   // ─── Reenvío (RF-8.5) ───────────────────────────────────────────────────────
   async resendReceipt(dto: ResendReceiptDto) {
     return this.resendReceiptUseCase.execute(dto);

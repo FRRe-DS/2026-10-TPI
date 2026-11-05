@@ -76,3 +76,80 @@ export class SendNotificationDto {
   @IsOptional()
   attachments?: NotificationAttachmentDto[];
 }
+
+export class ReferenciaNotificacionDto {
+  @ApiProperty({ example: 'VIAJE', enum: ['VIAJE', 'RESERVA', 'PAGO'] })
+  @IsString()
+  @IsOptional()
+  tipo?: string;
+
+  @ApiProperty({ example: 'trip-98765' })
+  @IsString()
+  @IsOptional()
+  id?: string;
+}
+
+/**
+ * DTO para el endpoint canónico POST /api/v1/notificaciones (NotificacionNueva)
+ * con soporte retrocompatible en inglés.
+ */
+export class EnviarNotificacionUnificadaDto {
+  @ApiProperty({ required: false, example: 'usr-uuid-123' })
+  @IsString()
+  @IsOptional()
+  destinatarioId?: string;
+
+  @ApiProperty({ required: false, example: 'pasajero@ejemplo.com' })
+  @IsString()
+  @IsOptional()
+  destinatario?: string;
+
+  @ApiProperty({ required: false, example: 'CLIENTE', enum: ['CLIENTE', 'CONDUCTOR'] })
+  @IsString()
+  @IsOptional()
+  rol?: string;
+
+  @ApiProperty({ required: false, enum: NotificationChannelDto, default: NotificationChannelDto.EMAIL })
+  @IsEnum(NotificationChannelDto)
+  @IsOptional()
+  canal?: NotificationChannelDto;
+
+  @ApiProperty({ required: false, example: 'Tu conductor está en camino' })
+  @IsString()
+  @IsOptional()
+  asunto?: string;
+
+  @ApiProperty({ required: false, example: 'El vehículo llegará en 5 minutos.' })
+  @IsString()
+  @IsOptional()
+  mensaje?: string;
+
+  @ApiProperty({ required: false, type: ReferenciaNotificacionDto })
+  @IsOptional()
+  referencia?: ReferenciaNotificacionDto;
+
+  // Alias en inglés para retrocompatibilidad
+  @IsEnum(NotificationChannelDto)
+  @IsOptional()
+  channel?: NotificationChannelDto;
+
+  @IsString()
+  @IsOptional()
+  recipient?: string;
+
+  @IsString()
+  @IsOptional()
+  subject?: string;
+
+  @IsString()
+  @IsOptional()
+  content?: string;
+
+  @IsString()
+  @IsOptional()
+  referenceId?: string;
+
+  @IsString()
+  @IsOptional()
+  referenceType?: string;
+}

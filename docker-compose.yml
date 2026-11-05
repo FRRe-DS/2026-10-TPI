@@ -79,8 +79,9 @@ services:
     container_name: g10_m8_backend
     restart: unless-stopped
     env_file:
-      - .env                          # Carga todas las variables de tu .env
-    environment:                      # Sobreescribe solo estas
+      - path: .env                    # Carga todas las variables de tu .env (si existe)
+        required: false
+    environment:                      # Sobreescribe los hosts para comunicación interna en Docker
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/m8_db
       DIRECT_URL: postgresql://postgres:postgres@postgres:5432/m8_db
       REDIS_HOST: redis
@@ -106,6 +107,26 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+  # Frontend Dashboard M8 (React + Vite) como contenedor (sin requerir npm install en el host)
+  frontend:
+    build:
+      context: .
+      dockerfile: ./apps/frontend/Dockerfile
+    container_name: g10_m8_frontend
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:3000/api/v1}
+    ports:
+      - '5173:5173'
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - m8_internal_net
 
   # Segunda API: Simulador del Módulo 6 (Viajes)
   api-viajes:

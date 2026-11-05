@@ -15,6 +15,7 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 COPY packages/contracts/package.json ./packages/contracts/
 COPY apps/backend/package.json ./apps/backend/
+COPY apps/frontend/package.json ./apps/frontend/
 
 # Instalar dependencias
 RUN npm ci

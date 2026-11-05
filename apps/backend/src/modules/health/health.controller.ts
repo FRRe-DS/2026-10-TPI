@@ -22,9 +22,13 @@ export class HealthController {
       estadoPostgres = 'caido';
     } // Verifica el estado de Redis
     const redisActivo = await this.redis.ping();
+    const estadoGeneral =
+      estadoPostgres === 'activo' && redisActivo ? 'ok' : 'degradado';
     return {
-      status: estadoPostgres === 'activo' && redisActivo ? 'ok' : 'degradado',
+      estado: estadoPostgres === 'activo' ? 'ok' : 'degradado',
+      status: estadoGeneral,
       module: 'M8 - Notificaciones, Documentos y Soporte',
+      modulo: 'M8 - Notificaciones, Documentos y Soporte',
       group: 'Grupo 10',
       dependencias: {
         postgres: estadoPostgres,

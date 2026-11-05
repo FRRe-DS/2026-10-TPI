@@ -57,6 +57,14 @@ export class TicketNumberCollisionError extends Error {
   }
 }
 
+export interface SupportTicketHistoryEntry {
+  estadoAnterior: string;
+  estadoNuevo: string;
+  actorId: string;
+  motivo?: string;
+  cambiadoEn: string;
+}
+
 export interface SupportTicketRepositoryPort {
   /**
    * Persiste un ticket nuevo.
@@ -72,6 +80,12 @@ export interface SupportTicketRepositoryPort {
 
   /** Actualiza estado y nota de resolución del ticket identificado por su UUID. */
   updateStatus(id: string, data: UpdateSupportTicketStatusData): Promise<SupportTicketRecord>;
+
+  /** Registra un cambio de estado en el historial del ticket (opcional). */
+  appendHistory?(ticketId: string, entry: SupportTicketHistoryEntry): Promise<void>;
+
+  /** Obtiene el historial cronológico de cambios de estado del ticket (opcional). */
+  getHistory?(ticketId: string): Promise<SupportTicketHistoryEntry[]>;
 }
 
 export const SUPPORT_TICKET_REPOSITORY_PORT = Symbol('SUPPORT_TICKET_REPOSITORY_PORT');

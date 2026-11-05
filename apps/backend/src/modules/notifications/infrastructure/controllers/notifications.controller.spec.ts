@@ -9,12 +9,22 @@ describe('NotificationsController', () => {
   let service: {
     send: jest.Mock;
     getLogs: jest.Mock;
+    enviarUnificada: jest.Mock;
+    listarPaginadas: jest.Mock;
+    findById: jest.Mock;
+    getIntentos: jest.Mock;
+    retry: jest.Mock;
   };
 
   beforeEach(async () => {
     service = {
       send: jest.fn().mockResolvedValue({ success: true, id: 'notification-1', status: 'SENT' }),
       getLogs: jest.fn().mockResolvedValue([{ id: 'notification-1', status: 'SENT' }]),
+      enviarUnificada: jest.fn().mockResolvedValue({ notificacionId: 'notification-1', id: 'notification-1', estado: 'ENVIADA' }),
+      listarPaginadas: jest.fn().mockResolvedValue({ page: 0, size: 20, totalElementos: 0, totalPaginas: 1, items: [] }),
+      findById: jest.fn().mockResolvedValue({ notificacionId: 'notification-1', id: 'notification-1', estado: 'ENVIADA' }),
+      getIntentos: jest.fn().mockResolvedValue({ page: 0, size: 20, totalElementos: 1, totalPaginas: 1, items: [{ numero: 1, resultado: 'EXITO' }] }),
+      retry: jest.fn().mockResolvedValue({ notificacionId: 'notification-1', id: 'notification-1', estado: 'ENVIADA', intentos: 2 }),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -83,5 +93,31 @@ describe('NotificationsController', () => {
     expect(document.components.schemas.SendNotificationDto).toBeDefined();
 
     await app.close();
+  });
+
+  it('delega las rutas canónicas del contrato coordinado (/notificaciones) al servicio', async () => {
+    const resEnvio = await controller.enviarNotificacion({
+      canal: NotificationChannelDto.EMAIL,
+      destinatario: 'pasajero@ejemplo.com',
+      asunto: 'Aviso',
+      mensaje: 'Hola',
+    });
+    expect(resEnvio).toEqual({
+      notificacionId: 'notification-1',
+      id: 'notification-1',
+      estado: 'ENVIADA',
+    });
+
+    const resLista = await controller.listarNotificaciones('usr-1', undefined, 'ENVIADA');
+    expect(resLista.items).toEqual([]);
+
+    const resDetalle = await controller.obtenerNotificacion('notification-1');
+    expect(resDetalle.estado).toBe('ENVIADA');
+
+    const resIntentos = await controller.listarIntentos('notification-1');
+    expect(resIntentos.items[0].resultado).toBe('EXITO');
+
+    const resReintento = await controller.reintentarNotificacion('notification-1');
+    expect(resReintento.intentos).toBe(2);
   });
 });

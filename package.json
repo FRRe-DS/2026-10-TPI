@@ -8,13 +8,14 @@
     "apps/*"
   ],
   "scripts": {
-    "dev:backend": "npm run start:dev --workspace=apps/backend",
-    "dev:frontend": "npm run dev --workspace=apps/frontend",
+    "setup:auto": "node -e \"const fs=require('fs'),cp=require('child_process');if(!fs.existsSync('.env')&&fs.existsSync('.env.example'))fs.copyFileSync('.env.example','.env');if(!fs.existsSync('node_modules'))cp.execSync('npm install',{stdio:'inherit'});if(!fs.existsSync('node_modules/.prisma/client'))cp.execSync('npm run prisma:generate --workspace=apps/backend',{stdio:'inherit'});\"",
+    "dev:backend": "npm run setup:auto && npm run start:dev --workspace=apps/backend",
+    "dev:frontend": "npm run setup:auto && npm run dev --workspace=apps/frontend",
     "build": "npm run build --workspaces",
     "test": "npm run test --workspaces --if-present",
     "test:integration": "npm run test:integration --workspace=@g10-m8/backend",
     "lint": "npm run lint --workspaces --if-present",
-    "docker:up": "docker compose up -d",
+    "docker:up": "docker compose up -d --build",
     "docker:down": "docker compose down",
     "docker:logs": "docker compose logs -f",
     "prisma:generate": "npm run prisma:generate --workspace=apps/backend",

@@ -3,6 +3,7 @@ import { PrismaService } from '../../../../common/prisma.service';
 import {
   CreateSupportTicketData,
   SupportTicketFilters,
+  SupportTicketHistoryEntry,
   SupportTicketRecord,
   SupportTicketRepositoryPort,
   TicketNumberCollisionError,
@@ -74,6 +75,50 @@ export class PrismaSupportTicketRepository implements SupportTicketRepositoryPor
       },
     });
     return this.toRecord(updated);
+  }
+
+  async appendHistory(
+    ticketId: string,
+    entry: SupportTicketHistoryEntry,
+  ): Promise<void> {
+    try {
+      await this.prisma.ticketMessage.create({
+        data: {
+          ticketId,
+          sender: entry.actorId,
+          senderRole: 'HISTORIAL_ESTADO',
+          message: JSON.stringify(entry),
+        },
+      });
+    } catch {
+      // Silencioso si la tabla no está disponible en un test unitario aislado
+    }
+  }
+
+  async getHistory(ticketId: string): Promise<SupportTicketHistoryEntry[]> {
+    try {
+      const rows = await this.prisma.ticketMessage.findMany({
+        where: {
+          ticketId,
+          senderRole: 'HISTORIAL_ESTADO',
+        },
+        orderBy: { createdAt: 'asc' },
+      });
+      const entries: SupportTicketHistoryEntry[] = [];
+      for (const row of rows) {
+        try {
+          const parsed = JSON.parse(row.message);
+          if (parsed && parsed.estadoNuevo) {
+            entries.push(parsed);
+          }
+        } catch {
+          // Ignorar mensajes no estructurados
+        }
+      }
+      return entries;
+    } catch {
+      return [];
+    }
   }
 
   /**

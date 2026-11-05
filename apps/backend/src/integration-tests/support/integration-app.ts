@@ -1,10 +1,20 @@
-import { INestApplication, ValidationPipe } from '@nestjs/common';
+import {
+  INestApplication,
+  UnsupportedMediaTypeException,
+  ValidationPipe,
+} from '@nestjs/common';
+import { NestExpressApplication } from '@nestjs/platform-express';
 import { Test } from '@nestjs/testing';
 import * as request from 'supertest';
 import type { Response } from 'superagent';
 import { AppModule } from '../../app.module';
 import { PrismaService } from '../../common/prisma.service';
 import { RedisService } from '../../common/redis.service';
+import {
+  ProblemDetailsFilter,
+  resolveRequestId,
+} from '../../common/problem-details.filter';
+import { HealthController } from '../../modules/health/health.controller';
 import { NotificationSenderPort } from '../../modules/notifications/domain/ports/notification-sender.port';
 import { TripCompletedConsumer } from '../../modules/notifications/infrastructure/messaging/trip-completed.consumer';
 import {
@@ -75,12 +85,49 @@ export async function createIntegrationApp(): Promise<IntegrationApp> {
       .useValue(new NoopTripCompletedConsumer())
       .compile();
 
-    app = moduleRef.createNestApplication();
-    // Misma configuración HTTP que apps/backend/src/main.ts (prefijo y validación global).
+    app = moduleRef.createNestApplication<NestExpressApplication>({
+      bodyParser: false,
+    });
+    // Misma configuración HTTP que apps/backend/src/main.ts (prefijo, correlación, RFC 9457 y validación global).
     app.setGlobalPrefix('api/v1');
+    app.use((req: any, res: any, next: () => void) => {
+      const requestId = resolveRequestId(req.headers?.['x-request-id']);
+      req.headers['x-request-id'] = requestId;
+      res.setHeader('X-Request-Id', requestId);
+      next();
+    });
+    app.use((req: any, _res: any, next: (err?: any) => void) => {
+      const method = (req.method || '').toUpperCase();
+      if (method === 'POST' || method === 'PUT' || method === 'PATCH') {
+        const contentType = req.headers?.['content-type'];
+        const contentLength = Number(req.headers?.['content-length'] ?? 0);
+        if (
+          contentType &&
+          contentLength > 0 &&
+          !String(contentType).toLowerCase().includes('application/json')
+        ) {
+          return next(
+            new UnsupportedMediaTypeException(
+              'El Content-Type del cuerpo debe ser application/json.',
+            ),
+          );
+        }
+      }
+      next();
+    });
+    (app as NestExpressApplication).useBodyParser('json', { limit: '1mb' });
+
+    const httpAdapter = app.getHttpAdapter();
+    const healthController = app.get(HealthController);
+    httpAdapter.get('/health', async (_req: any, res: any) => {
+      const body = await healthController.check();
+      res.status(200).json(body);
+    });
+
     app.useGlobalPipes(
       new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }),
     );
+    app.useGlobalFilters(new ProblemDetailsFilter());
     await app.init();
 
     const database = new TemporaryDatabase(prisma, url, runId);

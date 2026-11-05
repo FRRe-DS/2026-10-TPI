@@ -1,5 +1,11 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { NotFoundException, GoneException, BadRequestException } from '@nestjs/common';
+import {
+  NotFoundException,
+  GoneException,
+  BadRequestException,
+  ConflictException,
+  UnprocessableEntityException,
+} from '@nestjs/common';
 import { DocumentsController } from './documents.controller';
 import { DocumentsService } from '../../application/documents.service';
 import { GenerateReceiptPdfUseCase } from '../../application/use-cases/generate-receipt-pdf.use-case';
@@ -49,6 +55,7 @@ describe('DocumentsController (RF-8.3, RF-8.4, RF-8.5)', () => {
       verifyQr: jest.fn().mockImplementation(async (dto) => {
         if (dto.token === 'not-found') throw new NotFoundException();
         if (dto.token === 'used') throw new GoneException('Ya utilizado');
+        if (dto.token === 'expired') throw new GoneException('El código QR ha expirado');
         if (dto.token === 'wrong-trip') throw new BadRequestException('Viaje no coincide');
         return {
           valid: true,
@@ -240,6 +247,91 @@ describe('DocumentsController (RF-8.3, RF-8.4, RF-8.5)', () => {
       );
 
       await expect(controller.resendReceipt(resendDto)).rejects.toThrow(NotFoundException);
+    });
+  });
+
+  describe('Rutas Canónicas del Contrato Coordinado Definitivo (G10 + G7)', () => {
+    it('POST /viajes/:viajeId/qr (generarQrViaje) debe retornar imagenPng y qrDataUrl', async () => {
+      const result = await controller.generarQrViaje('trip-1', {
+        clienteId: 'usr-1',
+        validezSegundos: 300,
+      });
+
+      expect(result.viajeId).toBe('trip-1');
+      expect(result.estado).toBe('VIGENTE');
+      expect(result.imagenPng).toBe('sample');
+      expect(result.qrDataUrl).toBe('data:image/png;base64,sample');
+      expect(documentsService.generateQr).toHaveBeenCalledWith({
+        tripId: 'trip-1',
+        passengerId: 'usr-1',
+        ttlSeconds: 300,
+      });
+    });
+
+    it('POST /qr/validaciones (validarQrUnificado) debe validar el QR y mapear 409 si ya fue usado y 422 si expiró o no coincide el viaje', async () => {
+      const result = await controller.validarQrUnificado({
+        token: 'qr_trip-1_abc',
+        viajeId: 'trip-1',
+      });
+
+      expect(result.valido).toBe(true);
+      expect(result.viajeId).toBe('trip-1');
+      expect(result.usadoEn).toBeDefined();
+
+      await expect(
+        controller.validarQrUnificado({ token: 'used', viajeId: 'trip-1' }),
+      ).rejects.toThrow(ConflictException);
+
+      await expect(
+        controller.validarQrUnificado({ token: 'expired', viajeId: 'trip-1' }),
+      ).rejects.toThrow(UnprocessableEntityException);
+
+      await expect(
+        controller.validarQrUnificado({ token: 'wrong-trip', viajeId: 'trip-2' }),
+      ).rejects.toThrow(UnprocessableEntityException);
+    });
+
+    it('POST /qr/validaciones debe rechazar con 409 REEMPLAZADO cuando se generó un nuevo QR para el mismo viaje', async () => {
+      (documentsService.generateQr as jest.Mock)
+        .mockResolvedValueOnce({
+          token: 'qr_trip-replace_old',
+          qrDataUrl: 'data:image/png;base64,old',
+          expiresAt: new Date(Date.now() + 60000).toISOString(),
+          tripId: 'trip-replace',
+          ttlSeconds: 300,
+        })
+        .mockResolvedValueOnce({
+          token: 'qr_trip-replace_new',
+          qrDataUrl: 'data:image/png;base64,new',
+          expiresAt: new Date(Date.now() + 60000).toISOString(),
+          tripId: 'trip-replace',
+          ttlSeconds: 300,
+        });
+
+      await controller.generarQrViaje('trip-replace', { clienteId: 'usr-1' });
+      await controller.generarQrViaje('trip-replace', { clienteId: 'usr-1' });
+
+      await expect(
+        controller.validarQrUnificado({
+          token: 'qr_trip-replace_old',
+          viajeId: 'trip-replace',
+        }),
+      ).rejects.toThrow(ConflictException);
+    });
+
+    it('GET /comprobantes/:comprobanteId/pdf (descargarComprobantePdf) debe resolver polimórficamente por UUID o viajeId', async () => {
+      (documentsService.findReceiptByTripId as jest.Mock).mockResolvedValue(null);
+      documentsService.findReceiptByIdOrTripId = jest
+        .fn()
+        .mockResolvedValue(mockReceiptRecord);
+      const res = createMockResponse();
+
+      await controller.descargarComprobantePdf('receipt-uuid-123', res);
+
+      expect(documentsService.findReceiptByIdOrTripId).toHaveBeenCalledWith(
+        'receipt-uuid-123',
+      );
+      expect(res.end).toHaveBeenCalled();
     });
   });
 });

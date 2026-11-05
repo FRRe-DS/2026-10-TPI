@@ -37,6 +37,20 @@ export interface ReceiptRepositoryPort {
 
   /** Busca por tripId. Devuelve null si no existe. */
   findByTripId(tripId: string): Promise<ReceiptRecord | null>;
+
+  /**
+   * Busca polimórficamente por UUID de comprobante (id), código (receiptCode) o viajeId (tripId).
+   */
+  findByIdOrTripId?(idOrTripId: string): Promise<ReceiptRecord | null>;
+
+  /**
+   * Lista comprobantes aplicando filtros opcionales.
+   */
+  findMany?(filters?: {
+    viajeId?: string;
+    pagoId?: string;
+    clienteId?: string;
+  }): Promise<ReceiptRecord[]>;
 }
 
 export const RECEIPT_REPOSITORY_PORT = Symbol('RECEIPT_REPOSITORY_PORT');

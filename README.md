@@ -11,6 +11,7 @@
 - [Organización de Roles y Células](ROLES.md): Distribución de responsabilidades para los 9 integrantes (1 Tech Lead + 4 células de 2 personas).
 - [Guía de Gestión en Teams y Trello](GUIA_COLABORADORES.md): Canales de comunicación y tablero Kanban del equipo.
 - [Especificación OpenAPI 3.0](packages/contracts/openapi.yaml): Contrato formal de interfaces de M8.
+- [Pruebas de integración con Testcontainers (Tema 25)](docs/TESTCONTAINERS.md): PostgreSQL temporal, comandos de ejecución y evidencias (ejecución con Docker pendiente).
 
 ---
 

@@ -12,6 +12,7 @@
     "dev:frontend": "npm run dev --workspace=apps/frontend",
     "build": "npm run build --workspaces",
     "test": "npm run test --workspaces --if-present",
+    "test:integration": "npm run test:integration --workspace=@g10-m8/backend",
     "lint": "npm run lint --workspaces --if-present",
     "docker:up": "docker compose up -d",
     "docker:down": "docker compose down",

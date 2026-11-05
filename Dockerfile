@@ -6,6 +6,9 @@
 # Stage 1: Build & Dependencies
 FROM node:20-alpine AS builder
 
+# OpenSSL es necesario para que Prisma detecte la versión correcta de su motor
+RUN apk add --no-cache openssl
+
 WORKDIR /app
 
 # Copiar archivos de dependencias del monorepo
@@ -30,6 +33,9 @@ RUN npm run build --workspace=@g10-m8/contracts && \
 # Stage 2: Production Runtime
 FROM node:20-alpine AS runner
 
+# OpenSSL es necesario para que Prisma cargue su motor en tiempo de ejecución
+RUN apk add --no-cache openssl
+
 WORKDIR /app
 
 ENV NODE_ENV=production
@@ -51,4 +57,5 @@ EXPOSE 3000
 HEALTHCHECK --interval=10s --timeout=5s --start-period=10s --retries=3 \
   CMD wget --no-verbose --tries=1 --spider http://localhost:3000/api/v1/health || exit 1
 
-CMD ["node", "apps/backend/dist/main"]
+# Está línea asegura que la base de datos esté sincronizada antes de iniciar el servidor
+CMD ["sh", "-c", "npx prisma db push --schema=apps/backend/prisma/schema.prisma --skip-generate && node apps/backend/dist/main"]

@@ -342,28 +342,32 @@ export class SupportController {
       }
     }
 
-    const actorId = jwtIdentity.sub ?? 'operador-m8';
-    const motivo = dto.motivo ?? resolutionNote;
-
     let updated: SupportTicketRecord;
-    try {
-      updated = await this.supportService.updateStatus(ticketId, {
-        status: mappedStatus,
-        resolutionNote,
-        actorId,
-        motivo,
-      });
-    } catch (error) {
-      if (error instanceof BadRequestException) {
-        throw new ConflictException({
-          type: '/errores/transicion-estado-invalida',
-          title: 'Transición de estado inválida',
-          detail: error.message,
+    if (
+      previousStatusEsp === 'RESUELTO' &&
+      mappedStatus === TicketStatusDto.IN_PROGRESS &&
+      typeof this.supportService.reopenResolvedTicket === 'function'
+    ) {
+      updated = await this.supportService.reopenResolvedTicket(ticketId, resolutionNote);
+    } else {
+      try {
+        updated = await this.supportService.updateStatus(ticketId, {
+          status: mappedStatus,
+          resolutionNote,
         });
+      } catch (error) {
+        if (error instanceof BadRequestException) {
+          throw new ConflictException({
+            type: '/errores/transicion-estado-invalida',
+            title: 'Transición de estado inválida',
+            detail: error.message,
+          });
+        }
+        throw error;
       }
-      throw error;
     }
 
+    const motivo = dto.motivo ?? resolutionNote;
     const newStatusEsp = STATUS_TO_SPANISH[updated.status] ?? updated.status;
     const historyEntry: SupportTicketHistoryEntry = {
       estadoAnterior: previousStatusEsp,
@@ -376,6 +380,9 @@ export class SupportController {
     const list = this.memoryHistory.get(updated.id) ?? [];
     list.push(historyEntry);
     this.memoryHistory.set(updated.id, list);
+    if (typeof this.supportService.appendHistory === 'function') {
+      await this.supportService.appendHistory(updated.id, historyEntry);
+    }
 
     return this.toUnifiedTicket(updated);
   }

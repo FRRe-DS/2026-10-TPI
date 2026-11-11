@@ -122,16 +122,17 @@ export class SupportService {
       resolutionNote: dto.resolutionNote,
     });
 
-    const motivo = dto.motivo ?? dto.resolutionNote;
-    const historyEntry: SupportTicketHistoryEntry = {
-      estadoAnterior: STATUS_TO_SPANISH[existing.status] ?? existing.status,
-      estadoNuevo: STATUS_TO_SPANISH[updated.status] ?? updated.status,
-      actorId: dto.actorId ?? updated.assignedTo ?? 'operador-m8',
-      ...(motivo ? { motivo } : {}),
-      cambiadoEn: (updated.updatedAt ?? new Date()).toISOString(),
-    };
-
-    await this.appendHistory(updated.id, historyEntry);
+    if (dto.actorId || dto.motivo) {
+      const motivo = dto.motivo ?? dto.resolutionNote;
+      const historyEntry: SupportTicketHistoryEntry = {
+        estadoAnterior: STATUS_TO_SPANISH[existing.status] ?? existing.status,
+        estadoNuevo: STATUS_TO_SPANISH[updated.status] ?? updated.status,
+        actorId: dto.actorId ?? updated.assignedTo ?? 'operador-m8',
+        ...(motivo ? { motivo } : {}),
+        cambiadoEn: (updated.updatedAt ?? new Date()).toISOString(),
+      };
+      await this.appendHistory(updated.id, historyEntry);
+    }
 
     return updated;
   }

@@ -342,11 +342,16 @@ export class SupportController {
       }
     }
 
+    const actorId = jwtIdentity.sub ?? 'operador-m8';
+    const motivo = dto.motivo ?? resolutionNote;
+
     let updated: SupportTicketRecord;
     try {
       updated = await this.supportService.updateStatus(ticketId, {
         status: mappedStatus,
         resolutionNote,
+        actorId,
+        motivo,
       });
     } catch (error) {
       if (error instanceof BadRequestException) {
@@ -364,16 +369,13 @@ export class SupportController {
       estadoAnterior: previousStatusEsp,
       estadoNuevo: newStatusEsp,
       actorId: jwtIdentity.sub ?? updated.assignedTo ?? 'operador-m8',
-      ...(dto.motivo || resolutionNote ? { motivo: dto.motivo ?? resolutionNote } : {}),
+      ...(motivo ? { motivo } : {}),
       cambiadoEn: (updated.updatedAt ?? new Date()).toISOString(),
     };
 
     const list = this.memoryHistory.get(updated.id) ?? [];
     list.push(historyEntry);
     this.memoryHistory.set(updated.id, list);
-    if (typeof this.supportService.appendHistory === 'function') {
-      await this.supportService.appendHistory(updated.id, historyEntry);
-    }
 
     return this.toUnifiedTicket(updated);
   }
@@ -383,6 +385,12 @@ export class SupportController {
     summary: 'Historial de estados de un ticket (RF-8.7 - Contrato Coordinado)',
   })
   @ApiParam({ name: 'ticketId', description: 'UUID o código TCK-2026-XXXXXX' })
+  @ApiQuery({ name: 'page', required: false, description: 'Número de página (base 0)' })
+  @ApiQuery({ name: 'size', required: false, description: 'Cantidad de elementos por página' })
+  @ApiResponse({ status: 200, description: 'Historial paginado de cambios de estado del ticket' })
+  @ApiResponse({ status: 401, description: 'No autenticado' })
+  @ApiResponse({ status: 403, description: 'Sin permiso para consultar este ticket' })
+  @ApiResponse({ status: 404, description: 'Ticket no encontrado' })
   async listarHistorialTicket(
     @Param('ticketId') ticketId: string,
     @Query('page') page?: string,

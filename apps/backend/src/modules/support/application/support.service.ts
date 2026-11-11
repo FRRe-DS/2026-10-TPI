@@ -20,12 +20,13 @@ import * as crypto from 'crypto';
 /**
  * Máquina de estados del ticket (RF-8.7):
  * OPEN -> IN_PROGRESS -> RESOLVED -> CLOSED
+ * Reapertura permitida: RESOLVED -> IN_PROGRESS (RESUELTO -> EN_REVISION)
  * CLOSED es estado final: no admite ninguna transición.
  */
 const ALLOWED_TRANSITIONS: Record<SupportTicketStatus, SupportTicketStatus[]> = {
   OPEN: ['IN_PROGRESS'],
   IN_PROGRESS: ['RESOLVED'],
-  RESOLVED: ['CLOSED'],
+  RESOLVED: ['IN_PROGRESS', 'CLOSED'],
   CLOSED: [],
 };
 

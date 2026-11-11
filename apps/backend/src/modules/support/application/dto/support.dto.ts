@@ -50,6 +50,16 @@ export class UpdateTicketStatusDto {
   @IsString()
   @IsOptional()
   resolutionNote?: string;
+
+  @ApiProperty({ required: false, example: 'operador-m8' })
+  @IsString()
+  @IsOptional()
+  actorId?: string;
+
+  @ApiProperty({ required: false, example: 'Revisión completada por operador.' })
+  @IsString()
+  @IsOptional()
+  motivo?: string;
 }
 
 // ─── DTOs para el Contrato Coordinado Definitivo (G10 + G7) ─────────────────

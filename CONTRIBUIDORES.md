@@ -58,15 +58,15 @@ docker compose up -d mailpit
 
 En el `.env`, configura `SMTP_HOST=localhost`, `SMTP_PORT=1025`, `SMTP_SECURE=false` y deja `SMTP_USER` y `SMTP_PASS` vacíos. Los mensajes enviados se pueden consultar en `http://localhost:8025`. Para usar otro servidor SMTP, reemplaza esos valores con la configuración correspondiente; con autenticación, configura ambos `SMTP_USER` y `SMTP_PASS`.
 
-#### Notificaciones al finalizar un viaje por RabbitMQ
+#### Notificaciones de viajes y reservas por RabbitMQ
 
-El backend consume eventos `trip.completed` desde el exchange durable `urban_mobility_events` y la cola durable `m8_notifications_queue`. Para desarrollo local, inicia RabbitMQ con el plugin de administración:
+El backend consume los eventos canónicos `trip.completed`, `trip.assigned`, `driver.arrived`, `trip.cancelled`, `reservation.created`, `reservation.confirmed`, `reservation.reminder` y `payment.captured` desde el exchange durable `urban_mobility_events` y la cola durable `m8_notifications_queue`. `trip.completed`, `reservation.created` y `payment.captured` se mapean al esquema coordinado `EventoEntrada` antes de generar la notificación. Para `trip.completed`, primero registra el comprobante de forma idempotente y luego envía el email con el código del comprobante; el `eventId` se registra en `NotificationLog`. Para desarrollo local, inicia RabbitMQ con el plugin de administración:
 
 ```bash
 docker compose up -d rabbitmq
 ```
 
-Verifica que `RABBITMQ_URL`, `RABBITMQ_EXCHANGE`, `RABBITMQ_QUEUE`, `RABBITMQ_EXCHANGE_TYPE=topic` y `RABBITMQ_TRIP_COMPLETED_ROUTING_KEY=trip.completed` coincidan con la configuración del broker. El consumidor crea una cola de reintentos con TTL; `RABBITMQ_NOTIFICATION_MAX_RETRIES` (3 por defecto) y `RABBITMQ_NOTIFICATION_RETRY_DELAY_MS` (30 segundos por defecto) controlan los reintentos. Mantén estable el TTL si la cola retry ya fue creada. Inicia el backend después de RabbitMQ; el consumidor crea las colas y bindings al arrancar.
+Verifica que `RABBITMQ_URL`, `RABBITMQ_EXCHANGE`, `RABBITMQ_QUEUE`, `RABBITMQ_EXCHANGE_TYPE=topic` y `RABBITMQ_TRIP_COMPLETED_ROUTING_KEY=trip.completed` coincidan con la configuración del broker. El consumidor declara un exchange DLX durable de tipo `direct` (`RABBITMQ_DLX_EXCHANGE`) y lo enlaza a `notifications.failed` (`RABBITMQ_FAILED_QUEUE`). Los correos reintentables fallidos permanecen como `PENDING` (`PENDIENTE`) durante los tres reintentos, programados con TTL de 30, 60 y 120 segundos. Si se agotan, el evento se publica y confirma en el DLX, y el `NotificationLog` pasa a `FAILED` (`FALLIDA`) antes de reconocer el mensaje original. El consumidor reconoce el mensaje original después de confirmar su publicación en una cola TTL separada, por lo que la cola principal puede procesar otros mensajes mientras transcurre la espera. Inicia el backend después de RabbitMQ; el consumidor declara las colas y bindings al arrancar.
 
 Cada evento se deduplica por `eventId` en `NotificationLog`. Antes de probar, aplica el nuevo campo del schema a la base configurada y regenera Prisma:
 

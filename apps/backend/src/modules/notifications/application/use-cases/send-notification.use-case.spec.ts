@@ -19,6 +19,8 @@ describe('SendNotificationUseCase', () => {
     sender = { send: jest.fn() } as jest.Mocked<NotificationSenderPort>;
     logRepository = {
       create: jest.fn().mockResolvedValue({ id: 'notification-1' }),
+      update: jest.fn().mockResolvedValue({ id: 'notification-1' }),
+      findByEventId: jest.fn().mockResolvedValue(null),
       findMany: jest.fn(),
     } as jest.Mocked<NotificationLogRepositoryPort>;
     useCase = new SendNotificationUseCase(sender, logRepository);
@@ -74,5 +76,58 @@ describe('SendNotificationUseCase', () => {
       }),
     );
     expect(result).toEqual({ success: true, id: 'notification-1', status: 'SENT' });
+  });
+
+  it('uses the queue retry schedule instead of retrying SMTP immediately', async () => {
+    sender.send.mockRejectedValue(new Error('SMTP no disponible'));
+
+    const result = await useCase.execute(dto, 'event-1', false, true);
+
+    expect(sender.send).toHaveBeenCalledTimes(1);
+    expect(logRepository.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventId: 'event-1',
+        status: 'PENDING',
+        retryCount: 0,
+        lastError: 'SMTP no disponible',
+      }),
+    );
+    expect(result).toEqual({
+      success: false,
+      id: 'notification-1',
+      status: 'PENDING',
+      retryable: true,
+    });
+  });
+
+  it('updates the existing event log when a queued email retry fails', async () => {
+    const existingLog = {
+      id: 'notification-1',
+      eventId: 'event-1',
+      ...dto,
+      status: 'PENDING' as const,
+      retryCount: 1,
+      lastError: 'SMTP no disponible',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    logRepository.findByEventId.mockResolvedValue(existingLog);
+    sender.send.mockRejectedValue(new Error('SMTP sigue sin responder'));
+
+    const result = await useCase.execute(dto, 'event-1', true, true);
+
+    expect(sender.send).toHaveBeenCalledTimes(1);
+    expect(logRepository.create).not.toHaveBeenCalled();
+    expect(logRepository.update).toHaveBeenCalledWith('notification-1', {
+      status: 'PENDING',
+      retryCount: 2,
+      lastError: 'SMTP sigue sin responder',
+    });
+    expect(result).toEqual({
+      success: false,
+      id: 'notification-1',
+      status: 'PENDING',
+      retryable: true,
+    });
   });
 });

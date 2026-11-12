@@ -19,6 +19,7 @@ import { PrismaReceiptRepository } from './infrastructure/persistence/prisma-rec
 import { RegisterReceiptUseCase } from './application/use-cases/register-receipt.use-case';
 import { ResendReceiptUseCase } from './application/use-cases/resend-receipt.use-case';
 import { NotificationsService } from '../notifications/application/notifications.service';
+import { TripCompletedConsumer } from '../notifications/infrastructure/messaging/trip-completed.consumer';
 
 import {
   QR_TOKEN_REPOSITORY_PORT,
@@ -76,6 +77,7 @@ import { VerifyQrUseCase } from './application/use-cases/verify-qr.use-case';
         new RegisterReceiptUseCase(repo),
       inject: [RECEIPT_REPOSITORY_PORT],
     },
+    TripCompletedConsumer,
 
     // --- Reenvío de comprobantes con adjunto PDF (RF-8.5) ---
     {

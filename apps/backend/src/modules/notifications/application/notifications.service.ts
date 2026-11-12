@@ -15,6 +15,7 @@ import {
   NotificationLogRecord,
   NotificationLogRepositoryPort,
   NotificationStatus,
+  UpdateNotificationLog,
 } from '../domain/ports/notification-log.repository.port';
 
 const STATUS_FROM_SPANISH: Record<string, NotificationStatus> = {
@@ -73,9 +74,35 @@ export class NotificationsService {
     dto: SendNotificationDto,
     eventId?: string,
     retryPending = false,
+    deferRetriesToQueue = false,
   ): Promise<NotificationSendResult> {
     this.logger.log(`Enviando notificación [${dto.channel}] a: ${dto.recipient}`);
-    return this.sendNotificationUseCase.execute(dto, eventId, retryPending);
+    return this.sendNotificationUseCase.execute(
+      dto,
+      eventId,
+      retryPending,
+      deferRetriesToQueue,
+    );
+  }
+
+  async markFailed(eventId: string, reason: string): Promise<void> {
+    const log = await this.notificationLogRepository.findByEventId(eventId);
+    if (!log) {
+      this.logger.warn(
+        `No existe NotificationLog para el evento agotado ${eventId}; se conserva en la DLQ.`,
+      );
+      return;
+    }
+    if (log.status !== 'PENDING') {
+      return;
+    }
+
+    const update: UpdateNotificationLog = {
+      status: 'FAILED',
+      retryCount: log.retryCount,
+      lastError: reason,
+    };
+    await this.notificationLogRepository.update(log.id, update);
   }
 
   async getLogs(recipient?: string, status?: string) {

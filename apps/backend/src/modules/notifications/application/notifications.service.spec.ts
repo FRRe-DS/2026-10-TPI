@@ -27,6 +27,8 @@ describe('NotificationsService', () => {
 
     repoMock = {
       create: jest.fn(),
+      update: jest.fn(),
+      findByEventId: jest.fn(),
       findMany: jest.fn().mockResolvedValue([
         { id: 'log-1', recipient: 'pasajero@ejemplo.com', status: 'SENT' },
       ]),
@@ -35,10 +37,15 @@ describe('NotificationsService', () => {
     service = new NotificationsService(useCaseMock, repoMock);
   });
 
-  it('delega el envío a SendNotificationUseCase pasando eventId y retryPending', async () => {
-    const result = await service.send(notification, 'event-1', true);
+  it('delega el envío a SendNotificationUseCase con la política de reintentos seleccionada', async () => {
+    const result = await service.send(notification, 'event-1', true, true);
 
-    expect(useCaseMock.execute).toHaveBeenCalledWith(notification, 'event-1', true);
+    expect(useCaseMock.execute).toHaveBeenCalledWith(
+      notification,
+      'event-1',
+      true,
+      true,
+    );
     expect(result).toEqual({
       success: true,
       id: 'notification-1',
@@ -60,5 +67,29 @@ describe('NotificationsService', () => {
     await expect(service.getLogs(undefined, 'INVALID_STATUS')).rejects.toThrow(
       BadRequestException,
     );
+  });
+
+  it('marca como FALLIDA una notificación pendiente al agotarse los reintentos', async () => {
+    repoMock.findByEventId.mockResolvedValue({
+      id: 'notification-1',
+      eventId: 'event-1',
+      channel: 'EMAIL',
+      recipient: notification.recipient,
+      subject: notification.subject,
+      content: notification.content,
+      status: 'PENDING',
+      retryCount: 3,
+      lastError: 'SMTP no disponible',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    await service.markFailed('event-1', 'SMTP no disponible');
+
+    expect(repoMock.update).toHaveBeenCalledWith('notification-1', {
+      status: 'FAILED',
+      retryCount: 3,
+      lastError: 'SMTP no disponible',
+    });
   });
 });

@@ -10,9 +10,10 @@ describe('TripCompletedConsumer', () => {
     'RABBITMQ_QUEUE',
     'RABBITMQ_EXCHANGE',
     'RABBITMQ_EXCHANGE_TYPE',
+    'RABBITMQ_DLX_EXCHANGE',
+    'RABBITMQ_FAILED_QUEUE',
+    'RABBITMQ_FAILED_ROUTING_KEY',
     'RABBITMQ_TRIP_COMPLETED_ROUTING_KEY',
-    'RABBITMQ_NOTIFICATION_MAX_RETRIES',
-    'RABBITMQ_NOTIFICATION_RETRY_DELAY_MS',
   ];
   const tripCompletedEvent = {
     eventId: 'evt-trip-1',
@@ -39,6 +40,7 @@ describe('TripCompletedConsumer', () => {
   let assertExchange: jest.Mock;
   let assertQueue: jest.Mock;
   let bindQueue: jest.Mock;
+  let publish: jest.Mock;
   let sendToQueue: jest.Mock;
   let waitForConfirms: jest.Mock;
   let ack: jest.Mock;
@@ -46,6 +48,7 @@ describe('TripCompletedConsumer', () => {
   let closeChannel: jest.Mock;
   let closeConnection: jest.Mock;
   let send: jest.Mock;
+  let markFailed: jest.Mock;
   let registerReceipt: jest.Mock;
   let consumer: TripCompletedConsumer;
 
@@ -64,11 +67,15 @@ describe('TripCompletedConsumer', () => {
     process.env.RABBITMQ_QUEUE = 'notifications';
     process.env.RABBITMQ_EXCHANGE = 'mobility.events';
     process.env.RABBITMQ_EXCHANGE_TYPE = 'topic';
+    process.env.RABBITMQ_DLX_EXCHANGE = 'notifications.dlx';
+    process.env.RABBITMQ_FAILED_QUEUE = 'notifications.failed';
+    process.env.RABBITMQ_FAILED_ROUTING_KEY = 'notifications.failed';
     process.env.RABBITMQ_TRIP_COMPLETED_ROUTING_KEY = 'trip.completed';
 
     assertExchange = jest.fn().mockResolvedValue(undefined);
     assertQueue = jest.fn().mockResolvedValue(undefined);
     bindQueue = jest.fn().mockResolvedValue(undefined);
+    publish = jest.fn().mockReturnValue(true);
     sendToQueue = jest.fn().mockReturnValue(true);
     waitForConfirms = jest.fn().mockResolvedValue(undefined);
     ack = jest.fn();
@@ -79,6 +86,7 @@ describe('TripCompletedConsumer', () => {
       assertExchange,
       assertQueue,
       bindQueue,
+      publish,
       sendToQueue,
       waitForConfirms,
       prefetch: jest.fn().mockResolvedValue(undefined),
@@ -108,11 +116,13 @@ describe('TripCompletedConsumer', () => {
       id: 'notification-1',
       status: 'SENT',
     });
+    markFailed = jest.fn().mockResolvedValue(undefined);
     registerReceipt = jest.fn().mockResolvedValue({
       receiptCode: 'REC-2026-00001',
     });
     consumer = new TripCompletedConsumer({
       send,
+      markFailed,
     } as unknown as NotificationsService, {
       execute: registerReceipt,
     } as unknown as RegisterReceiptUseCase);
@@ -142,6 +152,11 @@ describe('TripCompletedConsumer', () => {
     expect(assertExchange).toHaveBeenCalledWith('mobility.events', 'topic', {
       durable: true,
     });
+    expect(assertExchange).toHaveBeenCalledWith(
+      'notifications.dlx',
+      'direct',
+      { durable: true },
+    );
     expect(assertQueue).toHaveBeenCalledWith('notifications', {
       durable: true,
     });
@@ -160,6 +175,11 @@ describe('TripCompletedConsumer', () => {
       durable: true,
     });
     expect(bindQueue).toHaveBeenCalledWith(
+      'notifications.failed',
+      'notifications.dlx',
+      'notifications.failed',
+    );
+    expect(bindQueue).toHaveBeenCalledWith(
       'notifications',
       'mobility.events',
       'trip.completed',
@@ -175,6 +195,7 @@ describe('TripCompletedConsumer', () => {
       },
       'evt-trip-1',
       false,
+      true,
     );
     expect(registerReceipt).toHaveBeenCalledWith({
       tripId: 'trip-123',
@@ -191,6 +212,7 @@ describe('TripCompletedConsumer', () => {
       expect.any(Object),
       'evt-trip-1',
       false,
+      true,
     );
   });
 
@@ -199,6 +221,9 @@ describe('TripCompletedConsumer', () => {
       'RABBITMQ_QUEUE',
       'RABBITMQ_EXCHANGE',
       'RABBITMQ_EXCHANGE_TYPE',
+      'RABBITMQ_DLX_EXCHANGE',
+      'RABBITMQ_FAILED_QUEUE',
+      'RABBITMQ_FAILED_ROUTING_KEY',
       'RABBITMQ_TRIP_COMPLETED_ROUTING_KEY',
     ].forEach((name) => delete process.env[name]);
 
@@ -212,6 +237,19 @@ describe('TripCompletedConsumer', () => {
     expect(assertQueue).toHaveBeenCalledWith('m8_notifications_queue', {
       durable: true,
     });
+    expect(assertExchange).toHaveBeenCalledWith(
+      'notifications.dlx',
+      'direct',
+      { durable: true },
+    );
+    expect(assertQueue).toHaveBeenCalledWith('notifications.failed', {
+      durable: true,
+    });
+    expect(bindQueue).toHaveBeenCalledWith(
+      'notifications.failed',
+      'notifications.dlx',
+      'notifications.failed',
+    );
     [
       'trip.completed',
       'trip.assigned',
@@ -259,7 +297,8 @@ describe('TripCompletedConsumer', () => {
     await new Promise((resolve) => setImmediate(resolve));
 
     expect(send).not.toHaveBeenCalled();
-    expect(sendToQueue).toHaveBeenCalledWith(
+    expect(publish).toHaveBeenCalledWith(
+      'notifications.dlx',
       'notifications.failed',
       message.content,
       expect.objectContaining({
@@ -300,6 +339,226 @@ describe('TripCompletedConsumer', () => {
     expect(nack).not.toHaveBeenCalled();
   });
 
+  it('uses 30s, 60s, and 120s retries before marking the DLQ event failed', async () => {
+    send.mockResolvedValue({
+      success: false,
+      id: 'notification-failed',
+      status: 'PENDING',
+      retryable: true,
+    });
+    await consumer.onModuleInit();
+    const messages = [0, 1, 2, 3].map((retryCount) => {
+      const originalMessage = makeMessage(tripCompletedEvent);
+      return {
+        ...originalMessage,
+        fields: { ...originalMessage.fields, routingKey: 'trip.completed' },
+        properties: {
+          ...originalMessage.properties,
+          headers: { 'x-notification-retry-count': retryCount },
+        },
+      } as ConsumeMessage;
+    });
+
+    for (const message of messages) {
+      messageHandler(message);
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+
+    expect(send).toHaveBeenCalledTimes(4);
+    expect(assertQueue).toHaveBeenCalledWith(
+      'notifications.retry',
+      expect.objectContaining({
+        durable: true,
+        arguments: {
+          'x-message-ttl': 30000,
+          'x-dead-letter-exchange': 'mobility.events',
+          'x-dead-letter-routing-key': 'trip.completed',
+        },
+      }),
+    );
+    expect(assertQueue).toHaveBeenCalledWith(
+      'notifications.retry.attempt-2',
+      expect.objectContaining({
+        arguments: expect.objectContaining({ 'x-message-ttl': 60000 }),
+      }),
+    );
+    expect(assertQueue).toHaveBeenCalledWith(
+      'notifications.retry.attempt-3',
+      expect.objectContaining({
+        arguments: expect.objectContaining({ 'x-message-ttl': 120000 }),
+      }),
+    );
+    expect(sendToQueue.mock.calls.map(([queue]) => queue)).toEqual([
+      'notifications.retry',
+      'notifications.retry.attempt-2',
+      'notifications.retry.attempt-3',
+    ]);
+    expect(
+      sendToQueue.mock.calls.map(
+        ([, , options]) => options.headers['x-notification-retry-count'],
+      ),
+    ).toEqual([1, 2, 3]);
+    expect(publish).toHaveBeenCalledTimes(1);
+    expect(publish).toHaveBeenCalledWith(
+      'notifications.dlx',
+      'notifications.failed',
+      messages[3].content,
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          'x-notification-retry-count': 3,
+          'x-failure-reason': 'proveedor de notificaciones no disponible',
+        }),
+      }),
+    );
+    expect(markFailed).toHaveBeenCalledWith(
+      'evt-trip-1',
+      'proveedor de notificaciones no disponible',
+    );
+    expect(waitForConfirms).toHaveBeenCalledTimes(4);
+    expect(waitForConfirms.mock.invocationCallOrder[3]).toBeLessThan(
+      markFailed.mock.invocationCallOrder[0],
+    );
+    expect(markFailed.mock.invocationCallOrder[0]).toBeLessThan(
+      ack.mock.invocationCallOrder[3],
+    );
+    expect(ack).toHaveBeenCalledTimes(4);
+  });
+
+  it('processes another event while the failed event waits in its retry queue', async () => {
+    send
+      .mockResolvedValueOnce({
+        success: false,
+        id: 'notification-failed',
+        status: 'FAILED',
+        retryable: true,
+      })
+      .mockResolvedValueOnce({
+        success: true,
+        id: 'notification-2',
+        status: 'SENT',
+      });
+    await consumer.onModuleInit();
+    const failedMessage = makeMessage(tripCompletedEvent);
+    const nextEvent = {
+      ...tripCompletedEvent,
+      eventId: 'evt-trip-2',
+      data: { ...tripCompletedEvent.data, tripId: 'trip-456' },
+    };
+    const nextMessage = makeMessage(nextEvent);
+
+    messageHandler(failedMessage);
+    await new Promise((resolve) => setImmediate(resolve));
+    messageHandler(nextMessage);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(sendToQueue).toHaveBeenCalledWith(
+      'notifications.retry',
+      failedMessage.content,
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          'x-notification-retry-count': 1,
+        }),
+      }),
+    );
+    expect(send).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ referenceId: 'trip-456' }),
+      'evt-trip-2',
+      false,
+      true,
+    );
+    expect(ack).toHaveBeenCalledWith(failedMessage);
+    expect(ack).toHaveBeenCalledWith(nextMessage);
+  });
+
+  it('doubles the delay for each subsequent retry attempt', async () => {
+    send.mockResolvedValue({
+      success: false,
+      id: 'notification-failed',
+      status: 'FAILED',
+      retryable: true,
+    });
+    await consumer.onModuleInit();
+    const originalMessage = makeMessage(tripCompletedEvent);
+    const message = {
+      ...originalMessage,
+      fields: { ...originalMessage.fields, routingKey: 'trip.completed' },
+      properties: {
+        ...originalMessage.properties,
+        headers: { 'x-notification-retry-count': 1 },
+      },
+    } as ConsumeMessage;
+
+    messageHandler(message);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(assertQueue).toHaveBeenCalledWith(
+      'notifications.retry.attempt-2',
+      expect.objectContaining({
+        durable: true,
+        arguments: {
+          'x-message-ttl': 60000,
+          'x-dead-letter-exchange': 'mobility.events',
+          'x-dead-letter-routing-key': 'trip.completed',
+        },
+      }),
+    );
+    expect(sendToQueue).toHaveBeenCalledWith(
+      'notifications.retry.attempt-2',
+      message.content,
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          'x-notification-retry-count': 2,
+        }),
+      }),
+    );
+    expect(ack).toHaveBeenCalledWith(message);
+  });
+
+  it('uses four times the base delay on the third retry attempt', async () => {
+    send.mockResolvedValue({
+      success: false,
+      id: 'notification-failed',
+      status: 'FAILED',
+      retryable: true,
+    });
+    await consumer.onModuleInit();
+    const originalMessage = makeMessage(tripCompletedEvent);
+    const message = {
+      ...originalMessage,
+      fields: { ...originalMessage.fields, routingKey: 'trip.completed' },
+      properties: {
+        ...originalMessage.properties,
+        headers: { 'x-notification-retry-count': 2 },
+      },
+    } as ConsumeMessage;
+
+    messageHandler(message);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(assertQueue).toHaveBeenCalledWith(
+      'notifications.retry.attempt-3',
+      expect.objectContaining({
+        durable: true,
+        arguments: {
+          'x-message-ttl': 120000,
+          'x-dead-letter-exchange': 'mobility.events',
+          'x-dead-letter-routing-key': 'trip.completed',
+        },
+      }),
+    );
+    expect(sendToQueue).toHaveBeenCalledWith(
+      'notifications.retry.attempt-3',
+      message.content,
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          'x-notification-retry-count': 3,
+        }),
+      }),
+    );
+    expect(ack).toHaveBeenCalledWith(message);
+  });
+
   it('schedules database failures for delayed retry', async () => {
     send.mockRejectedValue(new Error('Database unavailable'));
     await consumer.onModuleInit();
@@ -325,7 +584,7 @@ describe('TripCompletedConsumer', () => {
     send.mockResolvedValue({
       success: false,
       id: 'notification-failed',
-      status: 'FAILED',
+      status: 'PENDING',
       retryable: true,
     });
     await consumer.onModuleInit();
@@ -340,7 +599,8 @@ describe('TripCompletedConsumer', () => {
     messageHandler(message);
     await new Promise((resolve) => setImmediate(resolve));
 
-    expect(sendToQueue).toHaveBeenCalledWith(
+    expect(publish).toHaveBeenCalledWith(
+      'notifications.dlx',
       'notifications.failed',
       message.content,
       expect.objectContaining({
@@ -350,7 +610,17 @@ describe('TripCompletedConsumer', () => {
         }),
       }),
     );
+    expect(markFailed).toHaveBeenCalledWith(
+      'evt-trip-1',
+      'proveedor de notificaciones no disponible',
+    );
+    expect(waitForConfirms.mock.invocationCallOrder[0]).toBeLessThan(
+      markFailed.mock.invocationCallOrder[0],
+    );
     expect(ack).toHaveBeenCalledWith(message);
+    expect(markFailed.mock.invocationCallOrder[0]).toBeLessThan(
+      ack.mock.invocationCallOrder[0],
+    );
   });
 
   it('binds reservation events and sends a reservation confirmation', async () => {
@@ -403,6 +673,7 @@ describe('TripCompletedConsumer', () => {
       },
       'evt-reservation-1',
       false,
+      true,
     );
     expect(ack).toHaveBeenCalledWith(message);
   });
@@ -445,6 +716,7 @@ describe('TripCompletedConsumer', () => {
       }),
       'evt-reservation-created',
       false,
+      true,
     );
     expect(ack).toHaveBeenCalledWith(message);
   });
@@ -486,6 +758,7 @@ describe('TripCompletedConsumer', () => {
       }),
       'evt-payment-captured',
       false,
+      true,
     );
     expect(ack).toHaveBeenCalledWith(message);
   });

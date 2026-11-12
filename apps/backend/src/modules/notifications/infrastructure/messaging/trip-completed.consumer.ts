@@ -29,16 +29,23 @@ const EVENTO_TIPOS: readonly EventoEntrada['tipo'][] = [
   'REINTEGRO_REGISTRADO',
 ];
 
+const MAX_RABBITMQ_TTL_MS = 2 ** 32 - 1;
+const MAX_NOTIFICATION_RETRIES = 3;
+const INITIAL_RETRY_DELAY_MS = 30000;
+
 @Injectable()
 export class TripCompletedConsumer implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(TripCompletedConsumer.name);
   private connection: ChannelModel | null = null;
   private channel: ConfirmChannel | null = null;
+  private exchange = '';
+  private deadLetterExchange = '';
+  private failedRoutingKey = '';
   private retryQueue = '';
   private readonly retryQueues = new Map<string, string>();
   private failedQueue = '';
-  private maxRetries = 3;
-  private retryDelayMs = 30000;
+  private readonly maxRetries = MAX_NOTIFICATION_RETRIES;
+  private readonly retryDelayMs = INITIAL_RETRY_DELAY_MS;
 
   constructor(
     private readonly notificationsService: NotificationsService,
@@ -50,6 +57,13 @@ export class TripCompletedConsumer implements OnModuleInit, OnModuleDestroy {
     const queue = process.env.RABBITMQ_QUEUE || 'm8_notifications_queue';
     const exchange = process.env.RABBITMQ_EXCHANGE || 'urban_mobility_events';
     const exchangeType = process.env.RABBITMQ_EXCHANGE_TYPE || 'topic';
+    this.exchange = exchange;
+    this.deadLetterExchange =
+      process.env.RABBITMQ_DLX_EXCHANGE || 'notifications.dlx';
+    this.failedQueue =
+      process.env.RABBITMQ_FAILED_QUEUE || 'notifications.failed';
+    this.failedRoutingKey =
+      process.env.RABBITMQ_FAILED_ROUTING_KEY || 'notifications.failed';
     const routingKey =
       process.env.RABBITMQ_TRIP_COMPLETED_ROUTING_KEY || 'trip.completed';
     const routingKeys = Array.from(
@@ -65,17 +79,7 @@ export class TripCompletedConsumer implements OnModuleInit, OnModuleDestroy {
       ]),
     );
     this.retryQueue = `${queue}.retry`;
-    this.failedQueue = `${queue}.failed`;
-    this.maxRetries = this.readPositiveInteger(
-      process.env.RABBITMQ_NOTIFICATION_MAX_RETRIES,
-      3,
-      'RABBITMQ_NOTIFICATION_MAX_RETRIES',
-    );
-    this.retryDelayMs = this.readPositiveInteger(
-      process.env.RABBITMQ_NOTIFICATION_RETRY_DELAY_MS,
-      30000,
-      'RABBITMQ_NOTIFICATION_RETRY_DELAY_MS',
-    );
+    this.getRetryDelayMs(this.maxRetries);
 
     try {
       this.connection = await amqp.connect(url);
@@ -85,6 +89,9 @@ export class TripCompletedConsumer implements OnModuleInit, OnModuleDestroy {
 
       this.channel = await this.connection.createConfirmChannel();
       await this.channel.assertExchange(exchange, exchangeType, {
+        durable: true,
+      });
+      await this.channel.assertExchange(this.deadLetterExchange, 'direct', {
         durable: true,
       });
       await this.channel.assertQueue(queue, { durable: true });
@@ -105,6 +112,11 @@ export class TripCompletedConsumer implements OnModuleInit, OnModuleDestroy {
         });
       }
       await this.channel.assertQueue(this.failedQueue, { durable: true });
+      await this.channel.bindQueue(
+        this.failedQueue,
+        this.deadLetterExchange,
+        this.failedRoutingKey,
+      );
       for (const key of routingKeys) {
         await this.channel.bindQueue(queue, exchange, key);
       }
@@ -188,6 +200,7 @@ export class TripCompletedConsumer implements OnModuleInit, OnModuleDestroy {
         },
         notification.eventId,
         this.getRetryCount(message) > 0,
+        true,
       );
 
       if (
@@ -748,6 +761,7 @@ export class TripCompletedConsumer implements OnModuleInit, OnModuleDestroy {
         },
         event.eventoId,
         this.getRetryCount(message) > 0,
+        true,
       );
 
       if (result.success || (result.status === 'FAILED' && !result.retryable)) {
@@ -776,7 +790,7 @@ export class TripCompletedConsumer implements OnModuleInit, OnModuleDestroy {
   ): Promise<void> {
     this.logger.error(`Evento RabbitMQ rechazado: ${reason}`);
     try {
-      await this.publishToQueue(this.failedQueue, message, {
+      await this.publishToDeadLetterExchange(message, {
         'x-failure-reason': reason,
       });
       this.channel?.ack(message);
@@ -796,19 +810,32 @@ export class TripCompletedConsumer implements OnModuleInit, OnModuleDestroy {
 
     try {
       if (retryCount < this.maxRetries) {
-        const retryQueue =
+        const baseRetryQueue =
           this.retryQueues.get(message.fields.routingKey) ?? this.retryQueue;
+        const retryQueue =
+          nextRetryCount === 1
+            ? baseRetryQueue
+            : `${baseRetryQueue}.attempt-${nextRetryCount}`;
+        const retryDelayMs = this.getRetryDelayMs(nextRetryCount);
+        if (nextRetryCount > 1) {
+          await this.assertRetryQueue(
+            retryQueue,
+            message.fields.routingKey,
+            retryDelayMs,
+          );
+        }
         await this.publishToQueue(retryQueue, message, {
           'x-notification-retry-count': nextRetryCount,
         });
         this.logger.warn(
-          `Evento ${eventId} programado para reintento ${nextRetryCount}/${this.maxRetries} en ${this.retryDelayMs} ms en ${retryQueue}: ${reason}`,
+          `Evento ${eventId} programado para reintento ${nextRetryCount}/${this.maxRetries} en ${retryDelayMs} ms en ${retryQueue}: ${reason}`,
         );
       } else {
-        await this.publishToQueue(this.failedQueue, message, {
+        await this.publishToDeadLetterExchange(message, {
           'x-notification-retry-count': retryCount,
           'x-failure-reason': reason,
         });
+        await this.notificationsService.markFailed(eventId, reason);
         this.logger.error(
           `Evento ${eventId} agotó ${this.maxRetries} reintentos; quedó en ${this.failedQueue}`,
         );
@@ -821,6 +848,24 @@ export class TripCompletedConsumer implements OnModuleInit, OnModuleDestroy {
       );
       this.channel?.nack(message, false, true);
     }
+  }
+
+  private async assertRetryQueue(
+    queue: string,
+    routingKey: string,
+    retryDelayMs: number,
+  ): Promise<void> {
+    if (!this.channel) {
+      throw new Error('El canal RabbitMQ no está disponible.');
+    }
+    await this.channel.assertQueue(queue, {
+      durable: true,
+      arguments: {
+        'x-message-ttl': retryDelayMs,
+        'x-dead-letter-exchange': this.exchange,
+        'x-dead-letter-routing-key': routingKey,
+      },
+    });
   }
 
   private async publishToQueue(
@@ -845,26 +890,47 @@ export class TripCompletedConsumer implements OnModuleInit, OnModuleDestroy {
     await this.channel.waitForConfirms();
   }
 
+  private async publishToDeadLetterExchange(
+    message: ConsumeMessage,
+    additionalHeaders: Record<string, string | number>,
+  ): Promise<void> {
+    if (!this.channel) {
+      throw new Error('El canal RabbitMQ no está disponible.');
+    }
+    this.channel.publish(
+      this.deadLetterExchange,
+      this.failedRoutingKey,
+      message.content,
+      {
+        persistent: true,
+        contentType: message.properties.contentType,
+        contentEncoding: message.properties.contentEncoding,
+        correlationId: message.properties.correlationId,
+        messageId: message.properties.messageId,
+        headers: {
+          ...message.properties.headers,
+          ...additionalHeaders,
+        },
+      },
+    );
+    await this.channel.waitForConfirms();
+  }
+
+  private getRetryDelayMs(retryAttempt: number): number {
+    const delayMs = this.retryDelayMs * 2 ** (retryAttempt - 1);
+    if (!Number.isSafeInteger(delayMs) || delayMs > MAX_RABBITMQ_TTL_MS) {
+      throw new Error(
+        'La demora exponencial de reintento excede el TTL máximo permitido por RabbitMQ.',
+      );
+    }
+    return delayMs;
+  }
+
   private getRetryCount(message: ConsumeMessage): number {
     const value = message.properties.headers?.['x-notification-retry-count'];
     return typeof value === 'number' && Number.isInteger(value) && value >= 0
       ? value
       : 0;
-  }
-
-  private readPositiveInteger(
-    value: string | undefined,
-    defaultValue: number,
-    name: string,
-  ): number {
-    if (value === undefined) {
-      return defaultValue;
-    }
-    const parsed = Number(value);
-    if (!Number.isInteger(parsed) || parsed < 1) {
-      throw new Error(`${name} debe ser un entero mayor a cero.`);
-    }
-    return parsed;
   }
 
   private async closeConnection(): Promise<void> {

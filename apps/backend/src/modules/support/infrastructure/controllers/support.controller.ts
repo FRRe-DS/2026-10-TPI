@@ -357,38 +357,23 @@ export class SupportController {
         });
       } catch (error) {
         if (error instanceof BadRequestException) {
-          if (
-            mappedStatus === TicketStatusDto.IN_PROGRESS &&
-            typeof this.supportService.reopenResolvedTicket === 'function'
-          ) {
-            try {
-              updated = await this.supportService.reopenResolvedTicket(ticketId, resolutionNote);
-            } catch {
-              throw new ConflictException({
-                type: '/errores/transicion-estado-invalida',
-                title: 'Transición de estado inválida',
-                detail: error.message,
-              });
-            }
-          } else {
-            throw new ConflictException({
-              type: '/errores/transicion-estado-invalida',
-              title: 'Transición de estado inválida',
-              detail: error.message,
-            });
-          }
-        } else {
-          throw error;
+          throw new ConflictException({
+            type: '/errores/transicion-estado-invalida',
+            title: 'Transición de estado inválida',
+            detail: error.message,
+          });
         }
+        throw error;
       }
     }
 
+    const motivo = dto.motivo ?? resolutionNote;
     const newStatusEsp = STATUS_TO_SPANISH[updated.status] ?? updated.status;
     const historyEntry: SupportTicketHistoryEntry = {
       estadoAnterior: previousStatusEsp,
       estadoNuevo: newStatusEsp,
       actorId: jwtIdentity.sub ?? updated.assignedTo ?? 'operador-m8',
-      ...(dto.motivo || resolutionNote ? { motivo: dto.motivo ?? resolutionNote } : {}),
+      ...(motivo ? { motivo } : {}),
       cambiadoEn: (updated.updatedAt ?? new Date()).toISOString(),
     };
 
@@ -407,6 +392,12 @@ export class SupportController {
     summary: 'Historial de estados de un ticket (RF-8.7 - Contrato Coordinado)',
   })
   @ApiParam({ name: 'ticketId', description: 'UUID o código TCK-2026-XXXXXX' })
+  @ApiQuery({ name: 'page', required: false, description: 'Número de página (base 0)' })
+  @ApiQuery({ name: 'size', required: false, description: 'Cantidad de elementos por página' })
+  @ApiResponse({ status: 200, description: 'Historial paginado de cambios de estado del ticket' })
+  @ApiResponse({ status: 401, description: 'No autenticado' })
+  @ApiResponse({ status: 403, description: 'Sin permiso para consultar este ticket' })
+  @ApiResponse({ status: 404, description: 'Ticket no encontrado' })
   async listarHistorialTicket(
     @Param('ticketId') ticketId: string,
     @Query('page') page?: string,

@@ -17,15 +17,23 @@ import {
 } from '../domain/ports/support-ticket.repository.port';
 import * as crypto from 'crypto';
 
+const STATUS_TO_SPANISH: Record<SupportTicketStatus, string> = {
+  OPEN: 'ABIERTO',
+  IN_PROGRESS: 'EN_REVISION',
+  RESOLVED: 'RESUELTO',
+  CLOSED: 'CERRADO',
+};
+
 /**
  * Máquina de estados del ticket (RF-8.7):
  * OPEN -> IN_PROGRESS -> RESOLVED -> CLOSED
+ * Reapertura permitida: RESOLVED -> IN_PROGRESS (RESUELTO -> EN_REVISION)
  * CLOSED es estado final: no admite ninguna transición.
  */
 const ALLOWED_TRANSITIONS: Record<SupportTicketStatus, SupportTicketStatus[]> = {
   OPEN: ['IN_PROGRESS'],
   IN_PROGRESS: ['RESOLVED'],
-  RESOLVED: ['CLOSED'],
+  RESOLVED: ['IN_PROGRESS', 'CLOSED'],
   CLOSED: [],
 };
 
@@ -109,10 +117,24 @@ export class SupportService {
       );
     }
 
-    return this.repository.updateStatus(existing.id, {
+    const updated = await this.repository.updateStatus(existing.id, {
       status: target,
       resolutionNote: dto.resolutionNote,
     });
+
+    if (dto.actorId || dto.motivo) {
+      const motivo = dto.motivo ?? dto.resolutionNote;
+      const historyEntry: SupportTicketHistoryEntry = {
+        estadoAnterior: STATUS_TO_SPANISH[existing.status] ?? existing.status,
+        estadoNuevo: STATUS_TO_SPANISH[updated.status] ?? updated.status,
+        actorId: dto.actorId ?? updated.assignedTo ?? 'operador-m8',
+        ...(motivo ? { motivo } : {}),
+        cambiadoEn: (updated.updatedAt ?? new Date()).toISOString(),
+      };
+      await this.appendHistory(updated.id, historyEntry);
+    }
+
+    return updated;
   }
 
   /**

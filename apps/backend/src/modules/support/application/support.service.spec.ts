@@ -48,6 +48,8 @@ describe('SupportService (RF-8.7)', () => {
         status: data.status,
         resolutionNote: data.resolutionNote ?? null,
       })),
+      appendHistory: jest.fn().mockResolvedValue(undefined),
+      getHistory: jest.fn().mockResolvedValue([]),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -169,6 +171,7 @@ describe('SupportService (RF-8.7)', () => {
     const validTransitions: Array<[SupportTicketStatus, TicketStatusDto]> = [
       ['OPEN', TicketStatusDto.IN_PROGRESS],
       ['IN_PROGRESS', TicketStatusDto.RESOLVED],
+      ['RESOLVED', TicketStatusDto.IN_PROGRESS],
       ['RESOLVED', TicketStatusDto.CLOSED],
     ];
 
@@ -194,7 +197,7 @@ describe('SupportService (RF-8.7)', () => {
       ['IN_PROGRESS', TicketStatusDto.OPEN],
       ['IN_PROGRESS', TicketStatusDto.CLOSED],
       ['RESOLVED', TicketStatusDto.OPEN],
-      ['RESOLVED', TicketStatusDto.IN_PROGRESS],
+      ['CLOSED', TicketStatusDto.OPEN],
     ];
 
     it.each(invalidTransitions)(
@@ -236,6 +239,50 @@ describe('SupportService (RF-8.7)', () => {
       await service.updateStatus('TCK-2026-A1B2C3', dtoFor(TicketStatusDto.IN_PROGRESS));
 
       expect(repository.updateStatus).toHaveBeenCalledWith('ticket-uuid-1', expect.anything());
+    });
+  });
+
+  describe('historial de cambios de estado', () => {
+    it('debe persistir una entrada en el historial al reabrir un ticket (RESUELTO -> EN_REVISION)', async () => {
+      repository.findByIdOrNumber.mockResolvedValue(buildTicket('RESOLVED'));
+
+      await service.updateStatus('ticket-uuid-1', {
+        status: TicketStatusDto.IN_PROGRESS,
+        actorId: 'usr-operador-99',
+        motivo: 'El cliente reporta que el reintegro no impactó.',
+      });
+
+      expect(repository.appendHistory).toHaveBeenCalledWith('ticket-uuid-1', {
+        estadoAnterior: 'RESUELTO',
+        estadoNuevo: 'EN_REVISION',
+        actorId: 'usr-operador-99',
+        motivo: 'El cliente reporta que el reintegro no impactó.',
+        cambiadoEn: FIXED_DATE.toISOString(),
+      });
+    });
+
+    it('debe devolver el historial de cambios de estado del ticket desde el repositorio', async () => {
+      const historyMock = [
+        {
+          estadoAnterior: 'ABIERTO',
+          estadoNuevo: 'EN_REVISION',
+          actorId: 'operador-m8',
+          cambiadoEn: FIXED_DATE.toISOString(),
+        },
+        {
+          estadoAnterior: 'RESUELTO',
+          estadoNuevo: 'EN_REVISION',
+          actorId: 'usr-operador-99',
+          motivo: 'Reapertura solicitada por revisión adicional',
+          cambiadoEn: FIXED_DATE.toISOString(),
+        },
+      ];
+      repository.getHistory!.mockResolvedValue(historyMock);
+
+      const history = await service.getHistory('ticket-uuid-1');
+
+      expect(history).toEqual(historyMock);
+      expect(repository.getHistory).toHaveBeenCalledWith('ticket-uuid-1');
     });
   });
 });

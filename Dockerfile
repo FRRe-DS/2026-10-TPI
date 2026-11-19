@@ -59,4 +59,4 @@ HEALTHCHECK --interval=10s --timeout=5s --start-period=10s --retries=3 \
   CMD wget --no-verbose --tries=1 --spider http://localhost:3000/api/v1/health || exit 1
 
 # Está línea asegura que la base de datos esté sincronizada antes de iniciar el servidor
-CMD ["sh", "-c", "npx prisma db push --schema=apps/backend/prisma/schema.prisma --skip-generate && node apps/backend/dist/main"]
+CMD ["sh", "-c", "npx prisma db push --schema=apps/backend/prisma/schema.prisma --skip-generate --accept-data-loss && node apps/backend/dist/main"]

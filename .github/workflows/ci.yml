@@ -6,8 +6,7 @@ on:
   pull_request:
     branches: [main, develop]
 
-permissions:
-  contents: read
+
 
 jobs:
   validate:
@@ -17,8 +16,7 @@ jobs:
     steps:
       - name: Checkout Código
         uses: actions/checkout@v4
-        with:
-          persist-credentials: false
+
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -65,7 +63,7 @@ jobs:
   publish:
     name: Publish ${{ matrix.image }} to GHCR
     needs: validate
-    if: ${{ github.event_name == 'push' }}
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read

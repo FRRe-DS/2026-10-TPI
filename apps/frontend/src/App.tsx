@@ -23,6 +23,8 @@ import {
   Search,
   Filter,
 } from 'lucide-react';
+import { createSimulatorId, simulatorModules, trackSimulation } from './simulator';
+import type { SimulationResult, SimulatorModule, SimulatorPayload } from './simulator';
 
 const API_BASE = (import.meta as any).env?.VITE_API_BASE_URL || 'http://localhost:3000/api/v1';
 
@@ -82,71 +84,65 @@ export default function App() {
   const [verifyLoading, setVerifyLoading] = useState(false);
 
   // ─── Simulador (M5, M6, M7, M9) ──────────────────────────────────────────────
-  const [simulationLog, setSimulationLog] = useState<string[]>([]);
+  const [simulationLog, setSimulationLog] = useState<SimulationResult[]>([]);
   const [simSearchFilter, setSimSearchFilter] = useState('');
-  const [simModuleFilter, setSimModuleFilter] = useState<string>('ALL');
+  const [simModuleFilter, setSimModuleFilter] = useState<SimulatorModule | 'ALL'>('ALL');
   const [submittingEvent, setSubmittingEvent] = useState(false);
-  const [lastEventResponse, setLastEventResponse] = useState<{
-    status: number;
-    statusText: string;
-    isAccepted: boolean;
-    eventoId: string;
-    recibidoEn: string;
-    module: string;
-    eventType: string;
-    referenceId: string;
-    recipient: string;
-    rawPayload: any;
-    rawResponse: any;
-    timestamp: string;
-  } | null>(null);
+  const lastEventResponse = simulationLog[0];
+  const lastEventAccepted = lastEventResponse?.status === 202;
+  const searchQuery = simSearchFilter.trim().toLowerCase();
+  const filteredSimulationLog = simulationLog.filter(event =>
+    (simModuleFilter === 'ALL' || event.module === simModuleFilter) &&
+    [event.eventoId, event.eventType, event.referenceId, event.tripId, event.recipient]
+      .some(value => value?.toLowerCase().includes(searchQuery)),
+  );
 
   // M5: Solicitud y Asignación de Viaje
-  const [simM5TripRequest, setSimM5TripRequest] = useState({
-    viajeId: 'trip-sol-4100',
+  const [simM5TripRequest, setSimM5TripRequest] = useState(() => ({
+    viajeId: createSimulatorId(),
     passengerEmail: 'pasajero.m5@movilidad.com',
-    passengerId: 'usr-m5-pasajero-1',
+    passengerId: createSimulatorId(),
     origin: 'Av. 9 de Julio 1200, Resistencia',
     destination: 'UTN FRRe - French 414',
     vehicleType: 'AUTO',
     estimatedFare: 3200,
     tipoEvento: 'VIAJE_SOLICITADO',
-  });
+  }));
 
   // M6: Ciclo y Finalización de Viaje
-  const [simTripCompleted, setSimTripCompleted] = useState({
-    tripId: 'trip-sim-5501',
+  const [simTripCompleted, setSimTripCompleted] = useState(() => ({
+    tripId: createSimulatorId(),
     passengerEmail: 'pasajero.viaje@ejemplo.com',
-    passengerId: 'usr-m6-pasajero-2',
+    passengerId: createSimulatorId(),
     driverName: 'Martín Conductor',
     fare: 4200,
     origin: 'Av. San Martín 450',
     destination: 'Aeropuerto Internacional',
     tipoEvento: 'VIAJE_FINALIZADO',
-  });
+  }));
 
   // M7: Tarifas y Pagos Capturados
-  const [simPayment, setSimPayment] = useState({
-    paymentId: 'pay-sim-7740',
-    tripId: 'trip-sim-5501',
+  const [simPayment, setSimPayment] = useState(() => ({
+    paymentId: createSimulatorId(),
+    tripId: createSimulatorId(),
     userEmail: 'pasajero.pago@ejemplo.com',
-    userId: 'usr-m7-pasajero-3',
+    userId: createSimulatorId(),
     amount: 3850,
     paymentMethod: 'MERCADOPAGO',
     tipoEvento: 'PAGO_CAPTURADO',
-  });
+  }));
 
   // M9: Reservas de Viajes Programados
-  const [simReservation, setSimReservation] = useState({
-    reservationId: 'res-sim-9021',
+  const [simReservation, setSimReservation] = useState(() => ({
+    reservationId: createSimulatorId(),
     passengerEmail: 'pasajero.reserva@ejemplo.com',
-    passengerId: 'usr-m9-pasajero-4',
+    passengerId: createSimulatorId(),
     scheduledTime: '19:30',
     origin: 'Av. Sarmiento 1200',
     destination: 'Shopping Sarmiento',
     estimatedFare: 2950,
     tipoEvento: 'RESERVA_CONFIRMADA',
-  });
+  }));
 
   // ─── Healthcheck inicial ───────────────────────────────────────────────────────
   const checkHealth = useCallback(() => {
@@ -438,171 +434,168 @@ export default function App() {
   };
 
   // ─── Simulador de Eventos Oficiales (POST /api/v1/eventos) ───────────────────
-  const handleDispatchOfficialEvent = async (mod: 'M5' | 'M6' | 'M7' | 'M9') => {
+  const handleDispatchOfficialEvent = async (submission: React.FormEvent<HTMLFormElement>, mod: SimulatorModule) => {
+    submission.preventDefault();
+    const eventoId = createSimulatorId();
+    const ocurridoEn = new Date().toISOString();
+
+    let eventPayload: SimulatorPayload;
+
+    if (mod === 'M5') {
+      const viajeId = simM5TripRequest.viajeId.trim() || createSimulatorId();
+      eventPayload = {
+        eventoId,
+        tipo: simM5TripRequest.tipoEvento,
+        origen: 'M5',
+        ocurridoEn,
+        viajeId,
+        destinatarios: [
+          {
+            usuarioId: simM5TripRequest.passengerId,
+            rol: 'CLIENTE',
+            email: simM5TripRequest.passengerEmail,
+            canalesPreferidos: ['EMAIL'],
+          },
+        ],
+        detalle: {
+          origen: simM5TripRequest.origin,
+          destino: simM5TripRequest.destination,
+          tipoVehiculo: simM5TripRequest.vehicleType,
+          importe: {
+            monto: simM5TripRequest.estimatedFare,
+            moneda: 'ARS',
+          },
+        },
+      };
+    } else if (mod === 'M6') {
+      const viajeId = simTripCompleted.tripId.trim() || createSimulatorId();
+      eventPayload = {
+        eventoId,
+        tipo: simTripCompleted.tipoEvento,
+        origen: 'M6',
+        ocurridoEn,
+        viajeId,
+        destinatarios: [
+          {
+            usuarioId: simTripCompleted.passengerId,
+            rol: 'CLIENTE',
+            email: simTripCompleted.passengerEmail,
+            canalesPreferidos: ['EMAIL'],
+          },
+        ],
+        detalle: {
+          origen: simTripCompleted.origin,
+          destino: simTripCompleted.destination,
+          motivo: `Conductor asignado: ${simTripCompleted.driverName}`,
+          importe: {
+            monto: simTripCompleted.fare,
+            moneda: 'ARS',
+          },
+        },
+      };
+    } else if (mod === 'M7') {
+      const pagoId = simPayment.paymentId.trim() || createSimulatorId();
+      const viajeId = simPayment.tripId.trim() || createSimulatorId();
+      eventPayload = {
+        eventoId,
+        tipo: simPayment.tipoEvento,
+        origen: 'M7',
+        ocurridoEn,
+        pagoId,
+        viajeId,
+        destinatarios: [
+          {
+            usuarioId: simPayment.userId,
+            rol: 'CLIENTE',
+            email: simPayment.userEmail,
+            canalesPreferidos: ['EMAIL'],
+          },
+        ],
+        detalle: {
+          motivo: `Acreditación de pago por ${simPayment.paymentMethod}`,
+          importe: {
+            monto: simPayment.amount,
+            moneda: 'ARS',
+          },
+        },
+      };
+    } else {
+      const reservaId = simReservation.reservationId.trim() || createSimulatorId();
+      const [hours, minutes] = simReservation.scheduledTime.split(':').map(Number);
+      const scheduledDate = new Date();
+      scheduledDate.setDate(scheduledDate.getDate() + 1);
+      scheduledDate.setHours(hours, minutes, 0, 0);
+      eventPayload = {
+        eventoId,
+        tipo: simReservation.tipoEvento,
+        origen: 'M9',
+        ocurridoEn,
+        reservaId,
+        destinatarios: [
+          {
+            usuarioId: simReservation.passengerId,
+            rol: 'CLIENTE',
+            email: simReservation.passengerEmail,
+            canalesPreferidos: ['EMAIL'],
+          },
+        ],
+        detalle: {
+          origen: simReservation.origin,
+          destino: simReservation.destination,
+          fechaProgramada: scheduledDate.toISOString(),
+          zonaHoraria: Intl.DateTimeFormat().resolvedOptions().timeZone,
+          motivo: `Horario programado: ${simReservation.scheduledTime}`,
+          importe: {
+            monto: simReservation.estimatedFare,
+            moneda: 'ARS',
+          },
+        },
+      };
+    }
+
+    const emitsReceipt = ['VIAJE_FINALIZADO', 'PAGO_CAPTURADO', 'REINTEGRO_REGISTRADO']
+      .includes(eventPayload.tipo);
+    const event: SimulationResult = {
+      eventoId,
+      module: mod,
+      eventType: eventPayload.tipo,
+      referenceId: eventPayload.pagoId ?? eventPayload.reservaId ?? eventPayload.viajeId ?? '',
+      tripId: eventPayload.viajeId,
+      receiptTripId: emitsReceipt ? eventPayload.viajeId : undefined,
+      recipient: eventPayload.destinatarios[0].email,
+      timestamp: new Date().toLocaleTimeString(),
+      checking: false,
+    };
+    const update = (changes: Partial<SimulationResult>) => {
+      setSimulationLog(previous => previous.map(entry =>
+        entry.eventoId === eventoId ? { ...entry, ...changes } : entry,
+      ));
+    };
+    setSimulationLog(previous => [event, ...previous]);
     setSubmittingEvent(true);
     try {
-      const eventoId =
-        typeof crypto !== 'undefined' && crypto.randomUUID
-          ? crypto.randomUUID()
-          : 'evt-' + Math.random().toString(36).substring(2, 11);
-      const ocurridoEn = new Date().toISOString();
-
-      let eventPayload: any;
-      let referenceId = '';
-      let recipientEmail = '';
-
-      if (mod === 'M5') {
-        const viajeId = simM5TripRequest.viajeId || `trip-sol-${Date.now()}`;
-        referenceId = viajeId;
-        recipientEmail = simM5TripRequest.passengerEmail;
-        eventPayload = {
-          eventoId,
-          tipo: simM5TripRequest.tipoEvento,
-          origen: 'M5',
-          ocurridoEn,
-          viajeId,
-          destinatarios: [
-            {
-              usuarioId: simM5TripRequest.passengerId || `usr-${viajeId}`,
-              rol: 'CLIENTE',
-              email: simM5TripRequest.passengerEmail,
-              canalesPreferidos: ['EMAIL'],
-            },
-          ],
-          detalle: {
-            origen: simM5TripRequest.origin,
-            destino: simM5TripRequest.destination,
-            tipoVehiculo: simM5TripRequest.vehicleType,
-            importe: {
-              monto: Number(simM5TripRequest.estimatedFare) || 3200,
-              moneda: 'ARS',
-            },
-          },
-        };
-      } else if (mod === 'M6') {
-        const viajeId = simTripCompleted.tripId || `trip-sim-${Date.now()}`;
-        referenceId = viajeId;
-        recipientEmail = simTripCompleted.passengerEmail;
-        eventPayload = {
-          eventoId,
-          tipo: simTripCompleted.tipoEvento,
-          origen: 'M6',
-          ocurridoEn,
-          viajeId,
-          destinatarios: [
-            {
-              usuarioId: simTripCompleted.passengerId || `usr-${viajeId}`,
-              rol: 'CLIENTE',
-              email: simTripCompleted.passengerEmail,
-              canalesPreferidos: ['EMAIL'],
-            },
-          ],
-          detalle: {
-            origen: simTripCompleted.origin,
-            destino: simTripCompleted.destination,
-            motivo: `Conductor asignado: ${simTripCompleted.driverName}`,
-            importe: {
-              monto: Number(simTripCompleted.fare) || 4200,
-              moneda: 'ARS',
-            },
-          },
-        };
-      } else if (mod === 'M7') {
-        const pagoId = simPayment.paymentId || `pay-${Date.now()}`;
-        const viajeId = simPayment.tripId || `trip-pay-${Date.now()}`;
-        referenceId = pagoId;
-        recipientEmail = simPayment.userEmail;
-        eventPayload = {
-          eventoId,
-          tipo: simPayment.tipoEvento,
-          origen: 'M7',
-          ocurridoEn,
-          pagoId,
-          viajeId,
-          destinatarios: [
-            {
-              usuarioId: simPayment.userId || `usr-${pagoId}`,
-              rol: 'CLIENTE',
-              email: simPayment.userEmail,
-              canalesPreferidos: ['EMAIL'],
-            },
-          ],
-          detalle: {
-            motivo: `Acreditación de pago por ${simPayment.paymentMethod}`,
-            importe: {
-              monto: Number(simPayment.amount) || 3850,
-              moneda: 'ARS',
-            },
-          },
-        };
-      } else if (mod === 'M9') {
-        const reservaId = simReservation.reservationId || `res-${Date.now()}`;
-        referenceId = reservaId;
-        recipientEmail = simReservation.passengerEmail;
-        eventPayload = {
-          eventoId,
-          tipo: simReservation.tipoEvento,
-          origen: 'M9',
-          ocurridoEn,
-          reservaId,
-          destinatarios: [
-            {
-              usuarioId: simReservation.passengerId || `usr-${reservaId}`,
-              rol: 'CLIENTE',
-              email: simReservation.passengerEmail,
-              canalesPreferidos: ['EMAIL'],
-            },
-          ],
-          detalle: {
-            origen: simReservation.origin,
-            destino: simReservation.destination,
-            fechaProgramada: new Date(Date.now() + 86400000).toISOString(),
-            motivo: `Reserva confirmada para las ${simReservation.scheduledTime}`,
-            importe: {
-              monto: Number(simReservation.estimatedFare) || 2950,
-              moneda: 'ARS',
-            },
-          },
-        };
-      }
-
-      const res = await fetch(`${API_BASE}/eventos`, {
+      const response = await fetch(`${API_BASE}/eventos`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(eventPayload),
+        signal: AbortSignal.timeout(60_000),
       });
-
-      const data = await res.json().catch(() => ({}));
-      const isAccepted = res.status === 202;
-      const timeStr = new Date().toLocaleTimeString();
-
-      setLastEventResponse({
-        status: res.status,
-        statusText: isAccepted ? '202 Accepted' : `${res.status} ${res.statusText}`,
-        isAccepted,
-        eventoId: data.eventoId || eventoId,
-        recibidoEn: data.recibidoEn || ocurridoEn,
-        module: mod,
-        eventType: eventPayload.tipo,
-        referenceId,
-        recipient: recipientEmail,
-        rawPayload: eventPayload,
-        rawResponse: data,
-        timestamp: timeStr,
-      });
-
-      const logMsg = `[${timeStr}] [HTTP ${res.status} ${isAccepted ? 'Accepted' : 'Error'}] ${mod}: ${eventPayload.tipo} (#${referenceId}) -> Evento recibido (${(data.eventoId || eventoId).slice(0, 8)}...). Email despachado a ${recipientEmail}`;
-      setSimulationLog((prev) => [logMsg, ...prev]);
-
-      fetchNotifications();
-      if ((mod === 'M6' || mod === 'M7') && eventPayload.viajeId) {
-        setDownloadTripId(eventPayload.viajeId);
-        setResendTripId(eventPayload.viajeId);
+      const data = await response.json().catch(() => null);
+      if (response.status !== 202) {
+        update({
+          status: response.status,
+          error: data?.detail || data?.message || 'El backend rechazó el evento.',
+        });
+        return;
       }
-    } catch (err: any) {
-      const timeStr = new Date().toLocaleTimeString();
-      const errText = `[${timeStr}] [Error de Red] No se pudo conectar con el endpoint POST ${API_BASE}/eventos: ${err.message || 'Servidor offline'}`;
-      setSimulationLog((prev) => [errText, ...prev]);
+      update({ status: response.status, recibidoEn: data?.recibidoEn, checking: true });
+      if (event.receiptTripId) {
+        setDownloadTripId(event.receiptTripId);
+        setResendTripId(event.receiptTripId);
+      }
+      void trackSimulation(API_BASE, event, update);
+    } catch {
+      update({ error: 'No se recibió respuesta del backend.' });
     } finally {
       setSubmittingEvent(false);
     }
@@ -1471,7 +1464,7 @@ export default function App() {
                     Emulador y Simulador de Eventos Oficiales (POST /api/v1/eventos)
                   </h3>
                   <p style={{ color: '#9ca3af', fontSize: '13px', margin: 0 }}>
-                    Dispara eventos simulados hacia el endpoint unificado de la plataforma. El backend responde inmediatamente con <strong>HTTP 202 Accepted</strong> (asíncrono) y despacha las notificaciones por email a Mailpit y comprobantes en PDF.
+                    Enviá eventos de M5, M6, M7 y M9 y consultá la respuesta HTTP, el comprobante y el estado del correo.
                   </p>
                 </div>
               </div>
@@ -1497,7 +1490,7 @@ export default function App() {
                     Bandeja Local de Correos (Mailpit)
                   </div>
                   <div style={{ color: '#9ca3af', fontSize: '12px', marginTop: '2px' }}>
-                    Servidor SMTP local para inspeccionar y validar los correos generados con sus plantillas y comprobantes PDF adjuntos.
+                    Consultá los correos de la simulación en el buzón local.
                   </div>
                 </div>
                 <a
@@ -1513,75 +1506,71 @@ export default function App() {
               </div>
 
               {/* ─── VISUALIZACIÓN EN TIEMPO REAL: RESPUESTA HTTP 202 ACCEPTED ─── */}
-              {lastEventResponse && (
-                <div
-                  style={{
-                    marginBottom: '24px',
-                    padding: '18px 20px',
-                    borderRadius: '12px',
-                    background: lastEventResponse.isAccepted ? 'rgba(16, 185, 129, 0.08)' : 'rgba(239, 68, 68, 0.08)',
-                    border: `1px solid ${lastEventResponse.isAccepted ? '#10b981' : '#ef4444'}`,
-                  }}
-                >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px', marginBottom: '12px' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                      <span
-                        className={`badge ${lastEventResponse.isAccepted ? 'badge-success' : 'badge-danger'}`}
-                        style={{ fontSize: '12px', padding: '4px 10px', fontWeight: 700 }}
-                      >
-                        HTTP {lastEventResponse.statusText}
-                      </span>
-                      <span style={{ fontWeight: 600, fontSize: '14px', color: '#f3f4f6' }}>
-                        {lastEventResponse.isAccepted
-                          ? 'Evento Recibido y Encolado para Procesamiento Asíncrono'
-                          : 'Fallo al Procesar Evento en el Backend'}
-                      </span>
+              <div aria-live="polite">
+                {lastEventResponse && (
+                  <div
+                    style={{
+                      marginBottom: '24px',
+                      padding: '18px 20px',
+                      borderRadius: '12px',
+                      border: `1px solid ${lastEventResponse.error ? '#ef4444' : lastEventAccepted ? '#10b981' : 'var(--border-color)'}`,
+                    }}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px', marginBottom: '12px' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                        <span
+                          className={`badge ${lastEventResponse.error ? 'badge-danger' : lastEventAccepted ? 'badge-success' : 'badge-info'}`}
+                          style={{ fontSize: '12px', padding: '4px 10px', fontWeight: 700 }}
+                        >
+                          {simulationStatus(lastEventResponse)}
+                        </span>
+                        <span style={{ fontWeight: 600, fontSize: '14px', color: '#f3f4f6' }}>
+                          {lastEventAccepted ? 'Evento recibido' : lastEventResponse.error}
+                        </span>
+                      </div>
+                      <span style={{ fontSize: '11px', color: '#9ca3af' }}>{lastEventResponse.timestamp}</span>
                     </div>
-                    <span style={{ fontSize: '11px', color: '#9ca3af' }}>{lastEventResponse.timestamp}</span>
-                  </div>
 
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '12px', fontSize: '12px', color: '#d1d5db' }}>
-                    <div>
-                      <span style={{ color: '#9ca3af', display: 'block', marginBottom: '2px' }}>ID de Idempotencia (eventoId):</span>
-                      <code style={{ background: 'rgba(0,0,0,0.3)', padding: '2px 6px', borderRadius: '4px', fontSize: '11px', color: '#38bdf8' }}>
-                        {lastEventResponse.eventoId}
-                      </code>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '12px', fontSize: '12px', color: '#d1d5db' }}>
+                      <div>
+                        <span style={{ color: '#9ca3af', display: 'block', marginBottom: '2px' }}>ID de Idempotencia (eventoId):</span>
+                        <code style={{ background: 'rgba(0,0,0,0.3)', padding: '2px 6px', borderRadius: '4px', fontSize: '11px', color: '#38bdf8' }}>
+                          {lastEventResponse.eventoId}
+                        </code>
+                      </div>
+                      <div>
+                        <span style={{ color: '#9ca3af', display: 'block', marginBottom: '2px' }}>Módulo & Tipo de Hito:</span>
+                        <span className="badge badge-info" style={{ marginRight: '6px' }}>{lastEventResponse.module}</span>
+                        <strong style={{ color: '#f3f4f6' }}>{lastEventResponse.eventType}</strong>
+                      </div>
+                      <div>
+                        <span style={{ color: '#9ca3af', display: 'block', marginBottom: '2px' }}>Referencia Asociada:</span>
+                        <span>#{lastEventResponse.referenceId}</span>
+                      </div>
+                      <div>
+                        <span style={{ color: '#9ca3af', display: 'block', marginBottom: '2px' }}>Destinatario</span>
+                        <span>{lastEventResponse.recipient}</span>
+                      </div>
                     </div>
-                    <div>
-                      <span style={{ color: '#9ca3af', display: 'block', marginBottom: '2px' }}>Módulo & Tipo de Hito:</span>
-                      <span className="badge badge-info" style={{ marginRight: '6px' }}>{lastEventResponse.module}</span>
-                      <strong style={{ color: '#f3f4f6' }}>{lastEventResponse.eventType}</strong>
-                    </div>
-                    <div>
-                      <span style={{ color: '#9ca3af', display: 'block', marginBottom: '2px' }}>Referencia Asociada:</span>
-                      <span>#{lastEventResponse.referenceId}</span>
-                    </div>
-                    <div>
-                      <span style={{ color: '#9ca3af', display: 'block', marginBottom: '2px' }}>Destinatario Notificado:</span>
-                      <span style={{ color: '#10b981' }}>{lastEventResponse.recipient}</span>
-                    </div>
-                  </div>
 
-                  <div style={{ marginTop: '12px', paddingTop: '10px', borderTop: '1px solid rgba(255,255,255,0.06)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
-                    <span style={{ fontSize: '11px', color: '#9ca3af' }}>
-                      Timestamp del servidor: <code>{lastEventResponse.recibidoEn}</code>
-                    </span>
-                    <a
-                      href="http://localhost:8025"
-                      target="_blank"
-                      rel="noreferrer"
-                      style={{ color: '#38bdf8', fontSize: '12px', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '4px' }}
-                    >
-                      <Mail size={13} /> Ver correo entregado en Mailpit &rarr;
-                    </a>
+                    {lastEventAccepted && (
+                      <div style={{ marginTop: '12px', fontSize: '13px', display: 'grid', gap: '6px' }}>
+                        {lastEventResponse.recibidoEn && (
+                          <div>Recibido por M8 el <time dateTime={lastEventResponse.recibidoEn}>
+                            {new Date(lastEventResponse.recibidoEn).toLocaleString()}
+                          </time></div>
+                        )}
+                        <SimulationEffects event={lastEventResponse} />
+                      </div>
+                    )}
                   </div>
-                </div>
-              )}
+                )}
+              </div>
 
               {/* ─── FORMULARIOS INTERACTIVOS POR MÓDULO (M5, M6, M7, M9) ─── */}
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '20px', marginBottom: '24px' }}>
                 {/* ── M5: Solicitud de Viaje ── */}
-                <div style={{ padding: '16px', background: 'rgba(0,0,0,0.2)', borderRadius: '12px', border: '1px solid var(--border-color)', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
+                <form onSubmit={event => void handleDispatchOfficialEvent(event, 'M5')} style={{ padding: '16px', background: 'rgba(0,0,0,0.2)', borderRadius: '12px', border: '1px solid var(--border-color)', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
                   <div>
                     <div style={{ fontWeight: 600, color: '#38bdf8', marginBottom: '6px', display: 'flex', alignItems: 'center', gap: '6px' }}>
                       <Car size={16} /> M5: Solicitud de Viaje
@@ -1591,8 +1580,9 @@ export default function App() {
                     </p>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '9px' }}>
                       <div className="form-group">
-                        <label className="form-label" style={{ fontSize: '11px' }}>Tipo de Evento</label>
+                        <label htmlFor="sim-m5-tipo-de-evento" className="form-label" style={{ fontSize: '11px' }}>Tipo de Evento</label>
                         <select
+                          id="sim-m5-tipo-de-evento"
                           className="form-select"
                           style={{ padding: '5px 8px', fontSize: '12px' }}
                           value={simM5TripRequest.tipoEvento}
@@ -1603,8 +1593,9 @@ export default function App() {
                         </select>
                       </div>
                       <div className="form-group">
-                        <label className="form-label" style={{ fontSize: '11px' }}>ID de Viaje</label>
+                        <label htmlFor="sim-m5-id-de-viaje" className="form-label" style={{ fontSize: '11px' }}>ID de Viaje</label>
                         <input
+                          id="sim-m5-id-de-viaje"
                           className="form-input"
                           style={{ padding: '5px 8px', fontSize: '12px' }}
                           value={simM5TripRequest.viajeId}
@@ -1612,8 +1603,11 @@ export default function App() {
                         />
                       </div>
                       <div className="form-group">
-                        <label className="form-label" style={{ fontSize: '11px' }}>Email Pasajero</label>
+                        <label htmlFor="sim-m5-email-pasajero" className="form-label" style={{ fontSize: '11px' }}>Email Pasajero</label>
                         <input
+                          id="sim-m5-email-pasajero"
+                          type="email"
+                          required
                           className="form-input"
                           style={{ padding: '5px 8px', fontSize: '12px' }}
                           value={simM5TripRequest.passengerEmail}
@@ -1621,8 +1615,9 @@ export default function App() {
                         />
                       </div>
                       <div className="form-group">
-                        <label className="form-label" style={{ fontSize: '11px' }}>Origen</label>
+                        <label htmlFor="sim-m5-origen" className="form-label" style={{ fontSize: '11px' }}>Origen</label>
                         <input
+                          id="sim-m5-origen"
                           className="form-input"
                           style={{ padding: '5px 8px', fontSize: '12px' }}
                           value={simM5TripRequest.origin}
@@ -1630,8 +1625,9 @@ export default function App() {
                         />
                       </div>
                       <div className="form-group">
-                        <label className="form-label" style={{ fontSize: '11px' }}>Destino</label>
+                        <label htmlFor="sim-m5-destino" className="form-label" style={{ fontSize: '11px' }}>Destino</label>
                         <input
+                          id="sim-m5-destino"
                           className="form-input"
                           style={{ padding: '5px 8px', fontSize: '12px' }}
                           value={simM5TripRequest.destination}
@@ -1640,8 +1636,9 @@ export default function App() {
                       </div>
                       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
                         <div className="form-group">
-                          <label className="form-label" style={{ fontSize: '11px' }}>Vehículo</label>
+                          <label htmlFor="sim-m5-vehiculo" className="form-label" style={{ fontSize: '11px' }}>Vehículo</label>
                           <select
+                            id="sim-m5-vehiculo"
                             className="form-select"
                             style={{ padding: '5px 8px', fontSize: '12px' }}
                             value={simM5TripRequest.vehicleType}
@@ -1652,9 +1649,13 @@ export default function App() {
                           </select>
                         </div>
                         <div className="form-group">
-                          <label className="form-label" style={{ fontSize: '11px' }}>Estimado ($)</label>
+                          <label htmlFor="sim-m5-estimado" className="form-label" style={{ fontSize: '11px' }}>Estimado ($)</label>
                           <input
+                            id="sim-m5-estimado"
                             type="number"
+                            min="0.01"
+                            step="0.01"
+                            required
                             className="form-input"
                             style={{ padding: '5px 8px', fontSize: '12px' }}
                             value={simM5TripRequest.estimatedFare}
@@ -1668,26 +1669,27 @@ export default function App() {
                     id="btn-simulate-m5"
                     className="btn btn-primary"
                     style={{ marginTop: '14px', width: '100%', fontSize: '13px' }}
-                    onClick={() => handleDispatchOfficialEvent('M5')}
+                    type="submit"
                     disabled={submittingEvent}
                   >
                     <PlayCircle size={15} /> Disparar Evento M5
                   </button>
-                </div>
+                </form>
 
                 {/* ── M6: Viaje Finalizado ── */}
-                <div style={{ padding: '16px', background: 'rgba(0,0,0,0.2)', borderRadius: '12px', border: '1px solid var(--border-color)', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
+                <form onSubmit={event => void handleDispatchOfficialEvent(event, 'M6')} style={{ padding: '16px', background: 'rgba(0,0,0,0.2)', borderRadius: '12px', border: '1px solid var(--border-color)', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
                   <div>
                     <div style={{ fontWeight: 600, color: '#6366f1', marginBottom: '6px', display: 'flex', alignItems: 'center', gap: '6px' }}>
                       <PlayCircle size={16} /> M6: Viaje Finalizado
                     </div>
                     <p style={{ fontSize: '12px', color: '#9ca3af', marginBottom: '12px' }}>
-                      Genera comprobante PDF oficial en Supabase y despacha correo a Mailpit.
+                      Notifica cambios del viaje y registra un comprobante al finalizarlo.
                     </p>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '9px' }}>
                       <div className="form-group">
-                        <label className="form-label" style={{ fontSize: '11px' }}>Tipo de Evento</label>
+                        <label htmlFor="sim-m6-tipo-de-evento" className="form-label" style={{ fontSize: '11px' }}>Tipo de Evento</label>
                         <select
+                          id="sim-m6-tipo-de-evento"
                           className="form-select"
                           style={{ padding: '5px 8px', fontSize: '12px' }}
                           value={simTripCompleted.tipoEvento}
@@ -1695,11 +1697,14 @@ export default function App() {
                         >
                           <option value="VIAJE_FINALIZADO">VIAJE_FINALIZADO</option>
                           <option value="VIAJE_ARRIBO_CONDUCTOR">VIAJE_ARRIBO_CONDUCTOR</option>
+                          <option value="VIAJE_INICIADO">VIAJE_INICIADO</option>
+                          <option value="VIAJE_CANCELADO">VIAJE_CANCELADO</option>
                         </select>
                       </div>
                       <div className="form-group">
-                        <label className="form-label" style={{ fontSize: '11px' }}>ID de Viaje (tripId)</label>
+                        <label htmlFor="sim-m6-id-de-viaje-tripid" className="form-label" style={{ fontSize: '11px' }}>ID de Viaje (tripId)</label>
                         <input
+                          id="sim-m6-id-de-viaje-tripid"
                           className="form-input"
                           style={{ padding: '5px 8px', fontSize: '12px' }}
                           value={simTripCompleted.tripId}
@@ -1707,8 +1712,11 @@ export default function App() {
                         />
                       </div>
                       <div className="form-group">
-                        <label className="form-label" style={{ fontSize: '11px' }}>Email Pasajero</label>
+                        <label htmlFor="sim-m6-email-pasajero" className="form-label" style={{ fontSize: '11px' }}>Email Pasajero</label>
                         <input
+                          id="sim-m6-email-pasajero"
+                          type="email"
+                          required
                           className="form-input"
                           style={{ padding: '5px 8px', fontSize: '12px' }}
                           value={simTripCompleted.passengerEmail}
@@ -1716,8 +1724,9 @@ export default function App() {
                         />
                       </div>
                       <div className="form-group">
-                        <label className="form-label" style={{ fontSize: '11px' }}>Nombre Conductor</label>
+                        <label htmlFor="sim-m6-nombre-conductor" className="form-label" style={{ fontSize: '11px' }}>Nombre Conductor</label>
                         <input
+                          id="sim-m6-nombre-conductor"
                           className="form-input"
                           style={{ padding: '5px 8px', fontSize: '12px' }}
                           value={simTripCompleted.driverName}
@@ -1725,9 +1734,13 @@ export default function App() {
                         />
                       </div>
                       <div className="form-group">
-                        <label className="form-label" style={{ fontSize: '11px' }}>Tarifa Total ($ ARS)</label>
+                        <label htmlFor="sim-m6-tarifa-total-ars" className="form-label" style={{ fontSize: '11px' }}>Tarifa Total ($ ARS)</label>
                         <input
+                          id="sim-m6-tarifa-total-ars"
                           type="number"
+                          min="0.01"
+                          step="0.01"
+                          required
                           className="form-input"
                           style={{ padding: '5px 8px', fontSize: '12px' }}
                           value={simTripCompleted.fare}
@@ -1759,15 +1772,15 @@ export default function App() {
                     id="btn-simulate-m6"
                     className="btn btn-primary"
                     style={{ marginTop: '14px', width: '100%', fontSize: '13px' }}
-                    onClick={() => handleDispatchOfficialEvent('M6')}
+                    type="submit"
                     disabled={submittingEvent}
                   >
                     <PlayCircle size={15} /> Disparar Evento M6
                   </button>
-                </div>
+                </form>
 
                 {/* ── M7: Pago Capturado ── */}
-                <div style={{ padding: '16px', background: 'rgba(0,0,0,0.2)', borderRadius: '12px', border: '1px solid var(--border-color)', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
+                <form onSubmit={event => void handleDispatchOfficialEvent(event, 'M7')} style={{ padding: '16px', background: 'rgba(0,0,0,0.2)', borderRadius: '12px', border: '1px solid var(--border-color)', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
                   <div>
                     <div style={{ fontWeight: 600, color: '#10b981', marginBottom: '6px', display: 'flex', alignItems: 'center', gap: '6px' }}>
                       <CreditCard size={16} /> M7: Pago Capturado
@@ -1777,8 +1790,9 @@ export default function App() {
                     </p>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '9px' }}>
                       <div className="form-group">
-                        <label className="form-label" style={{ fontSize: '11px' }}>Tipo de Evento</label>
+                        <label htmlFor="sim-m7-tipo-de-evento" className="form-label" style={{ fontSize: '11px' }}>Tipo de Evento</label>
                         <select
+                          id="sim-m7-tipo-de-evento"
                           className="form-select"
                           style={{ padding: '5px 8px', fontSize: '12px' }}
                           value={simPayment.tipoEvento}
@@ -1789,8 +1803,9 @@ export default function App() {
                         </select>
                       </div>
                       <div className="form-group">
-                        <label className="form-label" style={{ fontSize: '11px' }}>ID de Pago (paymentId)</label>
+                        <label htmlFor="sim-m7-id-de-pago-paymentid" className="form-label" style={{ fontSize: '11px' }}>ID de Pago (paymentId)</label>
                         <input
+                          id="sim-m7-id-de-pago-paymentid"
                           className="form-input"
                           style={{ padding: '5px 8px', fontSize: '12px' }}
                           value={simPayment.paymentId}
@@ -1798,8 +1813,9 @@ export default function App() {
                         />
                       </div>
                       <div className="form-group">
-                        <label className="form-label" style={{ fontSize: '11px' }}>ID de Viaje (tripId)</label>
+                        <label htmlFor="sim-m7-id-de-viaje-tripid" className="form-label" style={{ fontSize: '11px' }}>ID de Viaje (tripId)</label>
                         <input
+                          id="sim-m7-id-de-viaje-tripid"
                           className="form-input"
                           style={{ padding: '5px 8px', fontSize: '12px' }}
                           value={simPayment.tripId}
@@ -1807,8 +1823,11 @@ export default function App() {
                         />
                       </div>
                       <div className="form-group">
-                        <label className="form-label" style={{ fontSize: '11px' }}>Email del Usuario</label>
+                        <label htmlFor="sim-m7-email-del-usuario" className="form-label" style={{ fontSize: '11px' }}>Email del Usuario</label>
                         <input
+                          id="sim-m7-email-del-usuario"
+                          type="email"
+                          required
                           className="form-input"
                           style={{ padding: '5px 8px', fontSize: '12px' }}
                           value={simPayment.userEmail}
@@ -1816,9 +1835,13 @@ export default function App() {
                         />
                       </div>
                       <div className="form-group">
-                        <label className="form-label" style={{ fontSize: '11px' }}>Monto ($ ARS)</label>
+                        <label htmlFor="sim-m7-monto-ars" className="form-label" style={{ fontSize: '11px' }}>Monto ($ ARS)</label>
                         <input
+                          id="sim-m7-monto-ars"
                           type="number"
+                          min="0.01"
+                          step="0.01"
+                          required
                           className="form-input"
                           style={{ padding: '5px 8px', fontSize: '12px' }}
                           value={simPayment.amount}
@@ -1826,8 +1849,9 @@ export default function App() {
                         />
                       </div>
                       <div className="form-group">
-                        <label className="form-label" style={{ fontSize: '11px' }}>Método de Pago</label>
+                        <label htmlFor="sim-m7-metodo-de-pago" className="form-label" style={{ fontSize: '11px' }}>Método de Pago</label>
                         <select
+                          id="sim-m7-metodo-de-pago"
                           className="form-select"
                           style={{ padding: '5px 8px', fontSize: '12px' }}
                           value={simPayment.paymentMethod}
@@ -1844,15 +1868,15 @@ export default function App() {
                     id="btn-simulate-m7"
                     className="btn btn-primary"
                     style={{ marginTop: '14px', width: '100%', fontSize: '13px' }}
-                    onClick={() => handleDispatchOfficialEvent('M7')}
+                    type="submit"
                     disabled={submittingEvent}
                   >
                     <PlayCircle size={15} /> Disparar Evento M7
                   </button>
-                </div>
+                </form>
 
                 {/* ── M9: Reserva Confirmada ── */}
-                <div style={{ padding: '16px', background: 'rgba(0,0,0,0.2)', borderRadius: '12px', border: '1px solid var(--border-color)', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
+                <form onSubmit={event => void handleDispatchOfficialEvent(event, 'M9')} style={{ padding: '16px', background: 'rgba(0,0,0,0.2)', borderRadius: '12px', border: '1px solid var(--border-color)', display: 'flex', flexDirection: 'column', justifyContent: 'space-between' }}>
                   <div>
                     <div style={{ fontWeight: 600, color: '#f59e0b', marginBottom: '6px', display: 'flex', alignItems: 'center', gap: '6px' }}>
                       <Calendar size={16} /> M9: Reserva Confirmada
@@ -1862,8 +1886,9 @@ export default function App() {
                     </p>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '9px' }}>
                       <div className="form-group">
-                        <label className="form-label" style={{ fontSize: '11px' }}>Tipo de Evento</label>
+                        <label htmlFor="sim-m9-tipo-de-evento" className="form-label" style={{ fontSize: '11px' }}>Tipo de Evento</label>
                         <select
+                          id="sim-m9-tipo-de-evento"
                           className="form-select"
                           style={{ padding: '5px 8px', fontSize: '12px' }}
                           value={simReservation.tipoEvento}
@@ -1872,11 +1897,16 @@ export default function App() {
                           <option value="RESERVA_CONFIRMADA">RESERVA_CONFIRMADA</option>
                           <option value="RESERVA_RECORDATORIO">RESERVA_RECORDATORIO</option>
                           <option value="RESERVA_CREADA">RESERVA_CREADA</option>
+                          <option value="RESERVA_MODIFICADA">RESERVA_MODIFICADA</option>
+                          <option value="RESERVA_ACTIVADA">RESERVA_ACTIVADA</option>
+                          <option value="RESERVA_CANCELADA">RESERVA_CANCELADA</option>
+                          <option value="RESERVA_VENCIDA">RESERVA_VENCIDA</option>
                         </select>
                       </div>
                       <div className="form-group">
-                        <label className="form-label" style={{ fontSize: '11px' }}>ID de Reserva</label>
+                        <label htmlFor="sim-m9-id-de-reserva" className="form-label" style={{ fontSize: '11px' }}>ID de Reserva</label>
                         <input
+                          id="sim-m9-id-de-reserva"
                           className="form-input"
                           style={{ padding: '5px 8px', fontSize: '12px' }}
                           value={simReservation.reservationId}
@@ -1884,8 +1914,11 @@ export default function App() {
                         />
                       </div>
                       <div className="form-group">
-                        <label className="form-label" style={{ fontSize: '11px' }}>Email Pasajero</label>
+                        <label htmlFor="sim-m9-email-pasajero" className="form-label" style={{ fontSize: '11px' }}>Email Pasajero</label>
                         <input
+                          id="sim-m9-email-pasajero"
+                          type="email"
+                          required
                           className="form-input"
                           style={{ padding: '5px 8px', fontSize: '12px' }}
                           value={simReservation.passengerEmail}
@@ -1893,8 +1926,11 @@ export default function App() {
                         />
                       </div>
                       <div className="form-group">
-                        <label className="form-label" style={{ fontSize: '11px' }}>Horario Programado</label>
+                        <label htmlFor="sim-m9-horario-programado" className="form-label" style={{ fontSize: '11px' }}>Horario de mañana (hora local)</label>
                         <input
+                          id="sim-m9-horario-programado"
+                          type="time"
+                          required
                           className="form-input"
                           style={{ padding: '5px 8px', fontSize: '12px' }}
                           value={simReservation.scheduledTime}
@@ -1902,8 +1938,9 @@ export default function App() {
                         />
                       </div>
                       <div className="form-group">
-                        <label className="form-label" style={{ fontSize: '11px' }}>Origen</label>
+                        <label htmlFor="sim-m9-origen" className="form-label" style={{ fontSize: '11px' }}>Origen</label>
                         <input
+                          id="sim-m9-origen"
                           className="form-input"
                           style={{ padding: '5px 8px', fontSize: '12px' }}
                           value={simReservation.origin}
@@ -1911,8 +1948,9 @@ export default function App() {
                         />
                       </div>
                       <div className="form-group">
-                        <label className="form-label" style={{ fontSize: '11px' }}>Destino</label>
+                        <label htmlFor="sim-m9-destino" className="form-label" style={{ fontSize: '11px' }}>Destino</label>
                         <input
+                          id="sim-m9-destino"
                           className="form-input"
                           style={{ padding: '5px 8px', fontSize: '12px' }}
                           value={simReservation.destination}
@@ -1925,12 +1963,12 @@ export default function App() {
                     id="btn-simulate-m9"
                     className="btn btn-primary"
                     style={{ marginTop: '14px', width: '100%', fontSize: '13px' }}
-                    onClick={() => handleDispatchOfficialEvent('M9')}
+                    type="submit"
                     disabled={submittingEvent}
                   >
                     <PlayCircle size={15} /> Disparar Evento M9
                   </button>
-                </div>
+                </form>
               </div>
 
               {/* ─── CONSOLA DE AUDITORÍA CON FILTROS DINÁMICOS Y BUSCADOR (RNF-15) ─── */}
@@ -1946,9 +1984,10 @@ export default function App() {
                         <Filter size={12} /> Módulo:
                       </span>
                       <div style={{ display: 'inline-flex', background: 'rgba(255,255,255,0.06)', borderRadius: '6px', padding: '2px' }}>
-                        {['ALL', 'M5', 'M6', 'M7', 'M9'].map((m) => (
+                        {(['ALL', ...simulatorModules] as const).map((m) => (
                           <button
                             key={m}
+                            aria-pressed={simModuleFilter === m}
                             style={{
                               background: simModuleFilter === m ? '#6366f1' : 'transparent',
                               color: simModuleFilter === m ? '#fff' : '#9ca3af',
@@ -1973,6 +2012,8 @@ export default function App() {
                     <div style={{ position: 'relative' }}>
                       <input
                         className="form-input"
+                        type="search"
+                        aria-label="Buscar eventos por ID, tipo o correo"
                         placeholder="Buscar por ID, evento o email..."
                         style={{ padding: '6px 10px 6px 28px', fontSize: '12px', width: '220px' }}
                         value={simSearchFilter}
@@ -1985,6 +2026,7 @@ export default function App() {
                         className="btn btn-secondary btn-sm"
                         style={{ padding: '6px 10px', fontSize: '11px' }}
                         onClick={() => setSimulationLog([])}
+                        disabled={submittingEvent}
                       >
                         Limpiar
                       </button>
@@ -1993,51 +2035,69 @@ export default function App() {
                 </div>
 
                 {/* Lista filtrada de logs */}
-                {(() => {
-                  const filtered = simulationLog.filter((log) => {
-                    const matchesModule =
-                      simModuleFilter === 'ALL' || log.includes(`] ${simModuleFilter}:`) || log.includes(`${simModuleFilter} ->`);
-                    const matchesSearch =
-                      !simSearchFilter.trim() || log.toLowerCase().includes(simSearchFilter.toLowerCase().trim());
-                    return matchesModule && matchesSearch;
-                  });
-
-                  if (filtered.length === 0) {
-                    return (
+                {filteredSimulationLog.length === 0 ? (
                       <div style={{ textAlign: 'center', padding: '24px 12px', color: '#6b7280', fontSize: '13px' }}>
                         {simulationLog.length === 0
                           ? 'Sin eventos ejecutados en esta sesión. Selecciona un módulo arriba y haz clic en "Disparar Evento".'
                           : 'No se encontraron eventos que coincidan con los filtros aplicados.'}
                       </div>
-                    );
-                  }
-
-                  return (
+                ) : (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '280px', overflowY: 'auto', paddingRight: '4px' }}>
-                      {filtered.map((log, idx) => (
+                      {filteredSimulationLog.map(event => (
                         <div
-                          key={idx}
+                          key={event.eventoId}
                           style={{
                             fontSize: '12px',
                             fontFamily: 'monospace',
-                            color: log.includes('202 Accepted') ? '#38bdf8' : log.includes('Error') ? '#ef4444' : '#e5e7eb',
+                            color: event.error ? '#ef4444' : '#e5e7eb',
                             background: 'rgba(255,255,255,0.03)',
                             padding: '8px 12px',
                             borderRadius: '6px',
-                            borderLeft: `3px solid ${log.includes('202') ? '#10b981' : log.includes('Error') ? '#ef4444' : '#6366f1'}`,
+                            borderLeft: `3px solid ${event.error ? '#ef4444' : event.status === 202 ? '#10b981' : '#6366f1'}`,
+                            overflowWrap: 'anywhere',
                           }}
                         >
-                          {log}
+                          <div>[{event.timestamp}] [{simulationStatus(event)}] {event.module} · {event.eventType}</div>
+                          <div>{event.eventoId} · #{event.referenceId} · {event.recipient}</div>
+                          {event.error && <div>{event.error}</div>}
+                          {event.status === 202 && <SimulationEffects event={event} />}
                         </div>
                       ))}
                     </div>
-                  );
-                })()}
+                )}
               </div>
             </div>
           )}
         </div>
       </main>
     </div>
+  );
+}
+
+function simulationStatus(event: SimulationResult) {
+  if (event.status === 202) return 'HTTP 202 Accepted';
+  if (event.status !== undefined) return `HTTP ${event.status}`;
+  return event.error ? 'Error de conexión' : 'Enviando evento…';
+}
+
+function SimulationEffects({ event }: { event: SimulationResult }) {
+  const pending = event.checking ? 'verificando…' : 'sin confirmación';
+  return (
+    <>
+      <div>
+        Comprobante · {event.receipt ? (
+          <a href={`${API_BASE}/comprobantes/${encodeURIComponent(event.receipt.id)}/pdf`}>
+            {event.receipt.code} (PDF)
+          </a>
+        ) : event.receiptTripId ? pending : 'no corresponde a este evento'}
+      </div>
+      <div>
+        Correo · {event.delivery?.status === 'SENT'
+          ? 'despachado'
+          : event.delivery?.status === 'FAILED'
+            ? `falló el envío${event.delivery.error ? ` (${event.delivery.error})` : ''}`
+            : pending}
+      </div>
+    </>
   );
 }

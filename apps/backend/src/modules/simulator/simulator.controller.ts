@@ -2,7 +2,7 @@ import { Controller, Post, Body, Logger } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
 import { NotificationsService } from '../notifications/application/notifications.service';
 import { DocumentsService } from '../documents/application/documents.service';
-import { RegisterReceiptUseCase } from '../documents/application/use-cases/register-receipt.use-case';
+import { IssueReceiptUseCase } from '../documents/application/use-cases/issue-receipt.use-case';
 import { NotificationChannelDto } from '../notifications/application/dto/send-notification.dto';
 
 @ApiTags('Simulador de Eventos')
@@ -13,7 +13,7 @@ export class SimulatorController {
   constructor(
     private readonly notificationsService: NotificationsService,
     private readonly documentsService: DocumentsService,
-    private readonly registerReceiptUseCase: RegisterReceiptUseCase,
+    private readonly issueReceiptUseCase: IssueReceiptUseCase,
   ) {}
 
   @Post('trip-completed')
@@ -35,8 +35,8 @@ export class SimulatorController {
 
     this.logger.log(`[SIMULADOR] Evento recibido: trip.completed para viaje ${tripId}`);
 
-    // RF-8.4: Persistir metadatos del comprobante de viaje (idempotente)
-    const receipt = await this.registerReceiptUseCase.execute({
+    // RF-8.4: Emitir el comprobante (registro idempotente + generación del PDF)
+    const issued = await this.issueReceiptUseCase.execute({
       tripId,
       passengerId: `usr-${tripId}`,
       passengerEmail: email,
@@ -44,6 +44,7 @@ export class SimulatorController {
       currency: 'ARS',
       driverName: driver,
     });
+    const { receipt } = issued;
 
     await this.notificationsService.send({
       channel: NotificationChannelDto.EMAIL,
@@ -52,6 +53,17 @@ export class SimulatorController {
       content: `Hola! Tu viaje con ${driver} ha finalizado. El total abonado fue de $${fare}. Podés consultar y descargar tu comprobante digital en el portal.`,
       referenceId: tripId,
       referenceType: 'TRIP',
+      ...(issued.pdf
+        ? {
+            attachments: [
+              {
+                filename: `comprobante-${receipt.receiptCode}.pdf`,
+                content: issued.pdf,
+                contentType: 'application/pdf',
+              },
+            ],
+          }
+        : {}),
     });
 
     return {
@@ -118,6 +130,14 @@ export class SimulatorController {
 
     this.logger.log(`[SIMULADOR] Evento recibido: payment.captured para pago ${payId}`);
 
+    const issued = await this.issueReceiptUseCase.execute({
+      tripId,
+      passengerId: `usr-${tripId}`,
+      passengerEmail: email,
+      amount,
+      currency: 'ARS',
+    });
+
     await this.notificationsService.send({
       channel: NotificationChannelDto.EMAIL,
       recipient: email,
@@ -125,6 +145,17 @@ export class SimulatorController {
       content: `Tu pago de $${amount} ARS mediante ${method} fue procesado exitosamente para el servicio #${tripId}.`,
       referenceId: payId,
       referenceType: 'PAYMENT',
+      ...(issued.pdf
+        ? {
+            attachments: [
+              {
+                filename: `comprobante-${issued.receipt.receiptCode}.pdf`,
+                content: issued.pdf,
+                contentType: 'application/pdf',
+              },
+            ],
+          }
+        : {}),
     });
 
     return {
@@ -132,6 +163,7 @@ export class SimulatorController {
       event: 'payment.captured',
       paymentId: payId,
       tripId,
+      receiptCode: issued.receipt.receiptCode,
       amount,
       paymentMethod: method,
       recipient: email,

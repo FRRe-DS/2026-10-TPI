@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { forwardRef, Module } from '@nestjs/common';
 import { NotificationsController } from './infrastructure/controllers/notifications.controller';
 import { NotificationsService } from './application/notifications.service';
 import { PrismaService } from '../../common/prisma.service';
@@ -8,8 +8,10 @@ import { NotificationLogRepositoryPort } from './domain/ports/notification-log.r
 import { NodemailerEmailAdapter } from './infrastructure/adapters/nodemailer-email.adapter';
 import { PrismaNotificationLogRepository } from './infrastructure/persistence/prisma-notification-log.repository';
 import { TripCompletedConsumer } from './infrastructure/messaging/trip-completed.consumer';
+import { DocumentsModule } from '../documents/documents.module';
 
 @Module({
+  imports: [forwardRef(() => DocumentsModule)],
   controllers: [NotificationsController],
   providers: [
     NotificationsService,

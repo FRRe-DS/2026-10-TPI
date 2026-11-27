@@ -151,10 +151,7 @@ export class DocumentsController {
     @Param('tripId') tripId: string,
     @Res() res: Response,
   ) {
-    let found = await this.documentsService.findReceiptByTripId(tripId);
-    if (!found && this.documentsService.findReceiptByIdOrTripId) {
-      found = await this.documentsService.findReceiptByIdOrTripId(tripId);
-    }
+    const found = await this.resolveReceipt(tripId);
 
     if (!found) {
       throw new NotFoundException(
@@ -163,24 +160,7 @@ export class DocumentsController {
       );
     }
 
-    const pdfBytes = await this.generateReceiptPdfUseCase.execute({
-      tripId: found.tripId,
-      passengerEmail: found.passengerEmail,
-      amount: found.amount,
-      currency: found.currency,
-      driverName: found.driverName,
-      issuedAt: found.issuedAt,
-    });
-
-    const pdfBuffer = Buffer.from(pdfBytes);
-
-    res.set({
-      'Content-Type': 'application/pdf',
-      'Content-Disposition': `attachment; filename="comprobante-${encodeURIComponent(found.receiptCode)}.pdf"`,
-      'Content-Length': pdfBuffer.length,
-    });
-
-    res.end(pdfBuffer);
+    return this.streamReceiptPdf(found, res);
   }
 
   // ─── Reenvío (RF-8.5 - Ruta Original G10) ──────────────────────────────────
@@ -480,10 +460,7 @@ export class DocumentsController {
     @Headers('authorization') authHeader?: string,
   ) {
     const jwtIdentity = parseAndAuthorizeJwt(authHeader, ['CLIENTE', 'OPERADOR']);
-    let found = await this.documentsService.findReceiptByTripId(comprobanteId);
-    if (!found && this.documentsService.findReceiptByIdOrTripId) {
-      found = await this.documentsService.findReceiptByIdOrTripId(comprobanteId);
-    }
+    const found = await this.resolveReceipt(comprobanteId);
     if (!found) {
       throw new NotFoundException(`Comprobante "${comprobanteId}" no encontrado.`);
     }
@@ -497,7 +474,7 @@ export class DocumentsController {
   })
   @ApiParam({
     name: 'comprobanteId',
-    description: 'UUID del comprobante, código REC-2026-XXXXXX o viajeId',
+    description: 'UUID del comprobante (también admite código REC-2026-XXXXXX o viajeId por compatibilidad)',
   })
   @ApiResponse({ status: 200, description: 'Archivo PDF' })
   @ApiResponse({ status: 404, description: 'No encontrado' })
@@ -506,29 +483,32 @@ export class DocumentsController {
     @Res() res: Response,
     @Headers('authorization') authHeader?: string,
   ) {
-    if (authHeader) {
-      const jwtIdentity = parseAndAuthorizeJwt(authHeader, ['CLIENTE', 'OPERADOR']);
-      let found = await this.documentsService.findReceiptByTripId(comprobanteId);
-      if (!found && this.documentsService.findReceiptByIdOrTripId) {
-        found = await this.documentsService.findReceiptByIdOrTripId(comprobanteId);
-      }
-      if (found) {
-        assertResourceOwnership(jwtIdentity, found.passengerId, ['CLIENTE']);
-      }
+    const jwtIdentity = parseAndAuthorizeJwt(authHeader, ['CLIENTE', 'OPERADOR']);
+    const found = await this.resolveReceipt(comprobanteId);
+    if (!found) {
+      throw new NotFoundException(`Comprobante "${comprobanteId}" no encontrado.`);
     }
-    return this.downloadPdf(comprobanteId, res);
+    assertResourceOwnership(jwtIdentity, found.passengerId, ['CLIENTE']);
+    return this.streamReceiptPdf(found, res);
   }
 
   @Post('comprobantes/:comprobanteId/reenvios')
   @HttpCode(HttpStatus.ACCEPTED)
   @ApiOperation({
     summary: 'Volver a enviar el comprobante (RF-8.5 - Contrato Coordinado)',
+    description:
+      'Regenera el PDF del comprobante con sus datos y su fecha de emisión originales y lo envía por ' +
+      'correo como adjunto application/pdf (comprobante-<código>.pdf) al contacto registrado del cliente. ' +
+      'El destinatario nunca se toma de la solicitud. No crea otro comprobante ni cambia su fecha.',
   })
   @ApiParam({
     name: 'comprobanteId',
     description: 'UUID del comprobante, código REC-2026-XXXXXX o viajeId',
   })
   @ApiResponse({ status: 202, description: 'Reenvío aceptado. El envío es asíncrono.' })
+  @ApiResponse({ status: 404, description: 'Comprobante no encontrado' })
+  @ApiResponse({ status: 422, description: 'Canal no soportado: el PDF adjunto solo se envía por EMAIL' })
+  @ApiResponse({ status: 502, description: 'Falló el envío del correo (no se informa éxito)' })
   async reenviarComprobanteUnificado(
     @Param('comprobanteId') comprobanteId: string,
     @Body() dto: ReenviarComprobanteUnificadoDto,
@@ -536,9 +516,20 @@ export class DocumentsController {
     @Headers('authorization') authHeader?: string,
   ) {
     const jwtIdentity = parseAndAuthorizeJwt(authHeader, ['CLIENTE', 'OPERADOR']);
+
+    const found = await this.resolveReceipt(comprobanteId);
+    if (!found) {
+      throw new NotFoundException(`Comprobante "${comprobanteId}" no encontrado.`);
+    }
+
+    // Control de acceso ANTES de consultar caché de idempotencia, independientemente de si
+    // se resolvió por UUID (comprobanteId), receiptCode o tripId.
+    assertResourceOwnership(jwtIdentity, found.passengerId, ['CLIENTE']);
+
+    const canal = (dto?.canal ?? 'EMAIL').toUpperCase();
     const hash = crypto
       .createHash('sha256')
-      .update(JSON.stringify({ comprobanteId, ...(dto ?? {}) }))
+      .update(JSON.stringify({ receiptId: found.id, canal }))
       .digest('hex');
 
     const cached = await checkIdempotency(
@@ -552,21 +543,19 @@ export class DocumentsController {
       return cached;
     }
 
-    let found = await this.documentsService.findReceiptByTripId(comprobanteId);
-    if (!found && this.documentsService.findReceiptByIdOrTripId) {
-      found = await this.documentsService.findReceiptByIdOrTripId(comprobanteId);
-    }
-    if (!found) {
-      throw new NotFoundException(`Comprobante "${comprobanteId}" no encontrado.`);
+    if (canal !== 'EMAIL') {
+      throw new UnprocessableEntityException({
+        type: '/errores/canal-no-soportado',
+        title: 'Canal no soportado para el reenvío del comprobante',
+        detail: `El comprobante PDF solo puede reenviarse por EMAIL (canal recibido: ${canal}).`,
+      });
     }
 
-    assertResourceOwnership(jwtIdentity, found.passengerId, ['CLIENTE']);
-
-    const email = dto.emailDestino ?? dto.email ?? found.passengerEmail;
-    const canal = (dto.canal ?? 'EMAIL').toUpperCase();
+    // Contrato: el reenvío va SIEMPRE al contacto registrado del cliente, nunca a una
+    // dirección indicada en la solicitud.
     const result = await this.documentsService.resendReceipt({
       tripId: found.tripId,
-      email,
+      email: found.passengerEmail,
     });
 
     const response = {
@@ -597,6 +586,41 @@ export class DocumentsController {
 
     await saveIdempotency(this.idempotencyStore, this.redis, 'resend', idempotencyKey, hash, response);
     return response;
+  }
+
+  /**
+   * Resuelve un comprobante priorizando `comprobanteId` (UUID del contrato oficial) y
+   * admitiendo `receiptCode` o `tripId` por compatibilidad con flujos vigentes.
+   */
+  private async resolveReceipt(idOrTripId: string): Promise<ReceiptRecord | null> {
+    if (this.documentsService.findReceiptByIdOrTripId) {
+      const found = await this.documentsService.findReceiptByIdOrTripId(idOrTripId);
+      if (found) {
+        return found;
+      }
+    }
+    return this.documentsService.findReceiptByTripId(idOrTripId);
+  }
+
+  private async streamReceiptPdf(found: ReceiptRecord, res: Response): Promise<void> {
+    const pdfBytes = await this.generateReceiptPdfUseCase.execute({
+      tripId: found.tripId,
+      passengerEmail: found.passengerEmail,
+      amount: found.amount,
+      currency: found.currency,
+      driverName: found.driverName,
+      issuedAt: found.issuedAt,
+    });
+
+    const pdfBuffer = Buffer.from(pdfBytes);
+
+    res.set({
+      'Content-Type': 'application/pdf',
+      'Content-Disposition': `attachment; filename="comprobante-${encodeURIComponent(found.receiptCode)}.pdf"`,
+      'Content-Length': pdfBuffer.length,
+    });
+
+    res.end(pdfBuffer);
   }
 
   private toUnifiedComprobante(

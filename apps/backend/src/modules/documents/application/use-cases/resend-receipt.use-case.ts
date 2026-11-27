@@ -40,8 +40,11 @@ export class ResendReceiptUseCase {
   ) {}
 
   async execute(dto: ResendReceiptDto): Promise<ResendReceiptResponseDto> {
-    // 1. Buscar comprobante persistido
-    const receipt = await this.receiptRepo.findByTripId(dto.tripId);
+    // 1. Buscar comprobante persistido (por tripId o polimórficamente por comprobanteId/receiptCode)
+    let receipt = await this.receiptRepo.findByTripId(dto.tripId);
+    if (!receipt && this.receiptRepo.findByIdOrTripId) {
+      receipt = await this.receiptRepo.findByIdOrTripId(dto.tripId);
+    }
 
     // 2. Si no existe, responder 404 sin enviar correo
     if (!receipt) {

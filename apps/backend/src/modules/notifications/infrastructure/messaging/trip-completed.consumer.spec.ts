@@ -1,6 +1,7 @@
 import { ConsumeMessage, Channel, ChannelModel } from 'amqplib';
 import * as amqp from 'amqplib';
 import { NotificationsService } from '../../application/notifications.service';
+import { IssueReceiptUseCase } from '../../../documents/application/use-cases/issue-receipt.use-case';
 import { TripCompletedConsumer } from './trip-completed.consumer';
 
 describe('TripCompletedConsumer', () => {
@@ -285,5 +286,58 @@ describe('TripCompletedConsumer', () => {
 
     expect(closeChannel).toHaveBeenCalled();
     expect(closeConnection).toHaveBeenCalled();
+  });
+
+  it('issues the receipt PDF automatically and attaches it when IssueReceiptUseCase is provided', async () => {
+    const pdfBuffer = Buffer.from('%PDF-1.3\nauto\n%%EOF\n', 'latin1');
+    const issueExecute = jest.fn().mockResolvedValue({
+      receipt: {
+        id: 'rec-auto-1',
+        receiptCode: 'REC-2026-AUTO01',
+        tripId: 'trip-123',
+        passengerId: 'passenger-1',
+        passengerEmail: 'pasajero@example.com',
+        amount: 4500.5,
+        currency: 'ARS',
+        driverName: 'Ana',
+        issuedAt: new Date('2026-10-22T14:00:00Z'),
+      },
+      pdf: pdfBuffer,
+    });
+    const consumerWithReceipts = new TripCompletedConsumer(
+      { send } as unknown as NotificationsService,
+      { execute: issueExecute } as unknown as IssueReceiptUseCase,
+    );
+
+    await consumerWithReceipts.onModuleInit();
+    const message = makeMessage(tripCompletedEvent);
+    messageHandler(message);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(issueExecute).toHaveBeenCalledWith({
+      tripId: 'trip-123',
+      passengerId: 'passenger-1',
+      passengerEmail: 'pasajero@example.com',
+      amount: 4500.5,
+      currency: 'ARS',
+      driverName: 'Ana',
+    });
+    expect(send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channel: 'EMAIL',
+        recipient: 'pasajero@example.com',
+        attachments: [
+          {
+            filename: 'comprobante-REC-2026-AUTO01.pdf',
+            content: pdfBuffer,
+            contentType: 'application/pdf',
+          },
+        ],
+      }),
+      'evt-trip-1',
+      false,
+    );
+    expect(ack).toHaveBeenCalledWith(message);
+    await consumerWithReceipts.onModuleDestroy();
   });
 });

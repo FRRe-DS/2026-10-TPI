@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
 import type { TripCompletedEvent } from '@g10-m8/contracts';
 import { isEmail } from 'class-validator';
 import {
@@ -9,6 +9,7 @@ import {
 import * as amqp from 'amqplib';
 import { NotificationsService } from '../../application/notifications.service';
 import { NotificationChannelDto } from '../../application/dto/send-notification.dto';
+import { IssueReceiptUseCase } from '../../../documents/application/use-cases/issue-receipt.use-case';
 
 @Injectable()
 export class TripCompletedConsumer implements OnModuleInit, OnModuleDestroy {
@@ -20,7 +21,10 @@ export class TripCompletedConsumer implements OnModuleInit, OnModuleDestroy {
   private maxRetries = 3;
   private retryDelayMs = 30000;
 
-  constructor(private readonly notificationsService: NotificationsService) {}
+  constructor(
+    private readonly notificationsService: NotificationsService,
+    @Optional() private readonly issueReceiptUseCase?: IssueReceiptUseCase,
+  ) {}
 
   async onModuleInit(): Promise<void> {
     const url = process.env.RABBITMQ_URL || 'amqp://localhost:5672';
@@ -128,6 +132,34 @@ export class TripCompletedConsumer implements OnModuleInit, OnModuleDestroy {
     ].join(' ');
 
     try {
+      let attachments:
+        | Array<{ filename: string; content: Buffer; contentType: string }>
+        | undefined;
+
+      if (this.issueReceiptUseCase) {
+        const issued = await this.issueReceiptUseCase.execute({
+          tripId: data.tripId,
+          passengerId: data.passengerId || `usr-${data.tripId}`,
+          passengerEmail: data.passengerEmail,
+          amount: data.totalFare,
+          currency: data.currency,
+          driverName: data.driverName,
+        });
+        if (issued.pdf) {
+          attachments = [
+            {
+              filename: `comprobante-${issued.receipt.receiptCode}.pdf`,
+              content: issued.pdf,
+              contentType: 'application/pdf',
+            },
+          ];
+        } else {
+          this.logger.warn(
+            `Comprobante ${issued.receipt.receiptCode} registrado sin PDF generado: ${issued.pdfError}`,
+          );
+        }
+      }
+
       const result = await this.notificationsService.send({
         channel: NotificationChannelDto.EMAIL,
         recipient: data.passengerEmail,
@@ -135,6 +167,7 @@ export class TripCompletedConsumer implements OnModuleInit, OnModuleDestroy {
         content,
         referenceId: data.tripId,
         referenceType: 'TRIP',
+        ...(attachments ? { attachments } : {}),
       }, event.eventId, this.getRetryCount(message) > 0);
 
       if (
@@ -256,6 +289,7 @@ export class TripCompletedConsumer implements OnModuleInit, OnModuleDestroy {
       pagoId?: string;
       destinatarios: Array<{
         usuarioId: string;
+        rol?: string;
         email?: string;
         canalesPreferidos?: string[];
       }>;
@@ -266,7 +300,9 @@ export class TripCompletedConsumer implements OnModuleInit, OnModuleDestroy {
       };
     },
   ): Promise<void> {
-    const dest = event.destinatarios[0];
+    const dest =
+      event.destinatarios.find((d) => d.rol?.toUpperCase() === 'CLIENTE') ??
+      event.destinatarios[0];
     const recipient = dest.email || `${dest.usuarioId}@notificaciones.m8.local`;
     const referenceId = event.viajeId ?? event.reservaId ?? event.pagoId;
     const referenceType = event.viajeId
@@ -276,6 +312,50 @@ export class TripCompletedConsumer implements OnModuleInit, OnModuleDestroy {
         : 'PAYMENT';
 
     try {
+      const tipoUpper = event.tipo.toUpperCase();
+      const emitsReceipt =
+        tipoUpper === 'VIAJE_FINALIZADO' ||
+        tipoUpper === 'PAGO_CAPTURADO' ||
+        tipoUpper === 'REINTEGRO_REGISTRADO';
+      const tripIdForReceipt = event.viajeId ?? event.pagoId;
+      const hasExplicitAmount =
+        typeof event.detalle?.importe?.monto === 'number' &&
+        event.detalle.importe.monto > 0;
+      const shouldIssueReceipt =
+        emitsReceipt &&
+        Boolean(tripIdForReceipt) &&
+        (tipoUpper !== 'VIAJE_FINALIZADO' || hasExplicitAmount) &&
+        dest.rol?.toUpperCase() !== 'CONDUCTOR';
+
+      let attachments:
+        | Array<{ filename: string; content: Buffer; contentType: string }>
+        | undefined;
+
+      if (this.issueReceiptUseCase && shouldIssueReceipt && tripIdForReceipt) {
+        const amount = hasExplicitAmount ? event.detalle!.importe!.monto : 3500;
+        const currency = event.detalle?.importe?.moneda || 'ARS';
+        const issued = await this.issueReceiptUseCase.execute({
+          tripId: tripIdForReceipt,
+          passengerId: dest.usuarioId || `usr-${tripIdForReceipt}`,
+          passengerEmail: recipient,
+          amount,
+          currency,
+        });
+        if (issued.pdf) {
+          attachments = [
+            {
+              filename: `comprobante-${issued.receipt.receiptCode}.pdf`,
+              content: issued.pdf,
+              contentType: 'application/pdf',
+            },
+          ];
+        } else {
+          this.logger.warn(
+            `Comprobante ${issued.receipt.receiptCode} registrado sin PDF generado: ${issued.pdfError}`,
+          );
+        }
+      }
+
       const result = await this.notificationsService.send(
         {
           channel: NotificationChannelDto.EMAIL,
@@ -284,6 +364,7 @@ export class TripCompletedConsumer implements OnModuleInit, OnModuleDestroy {
           content: `Hito ${event.tipo} informado por ${event.origen} para referencia ${referenceId}.`,
           referenceId,
           referenceType,
+          ...(attachments ? { attachments } : {}),
         },
         event.eventoId,
         this.getRetryCount(message) > 0,

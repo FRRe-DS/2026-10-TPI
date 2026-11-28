@@ -88,6 +88,30 @@ describe('ProblemDetailsFilter (RFC 9457 - Contrato Coordinado Definitivo M8)', 
       }),
     );
 
+    const { host: hostReplaced, status: statusReplaced, json: jsonReplaced } =
+      createMockHost('/api/v1/qr/validaciones');
+    filter.catch(
+      new ConflictException({
+        type: '/errores/qr-reemplazado',
+        title: 'El QR fue reemplazado',
+        detail:
+          'El código QR fue reemplazado por uno más reciente para el mismo viaje y ya no es válido.',
+      }),
+      hostReplaced,
+    );
+
+    expect(statusReplaced).toHaveBeenCalledWith(409);
+    expect(jsonReplaced).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: '/errores/qr-reemplazado',
+        title: 'El QR fue reemplazado',
+        status: 409,
+        detail:
+          'El código QR fue reemplazado por uno más reciente para el mismo viaje y ya no es válido.',
+        instance: '/api/v1/qr/validaciones',
+      }),
+    );
+
     const { host: host422, json: json422 } = createMockHost('/api/v1/eventos');
     filter.catch(new UnprocessableEntityException('Mismo eventoId con distinto cuerpo'), host422);
 

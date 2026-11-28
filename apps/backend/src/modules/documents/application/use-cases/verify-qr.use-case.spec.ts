@@ -1,7 +1,12 @@
 import { VerifyQrUseCase } from './verify-qr.use-case';
 import { QrTokenRepositoryPort, QrTokenRecord } from '../../domain/ports/qr-token.repository.port';
 import { RedisService } from '../../../../common/redis.service';
-import { BadRequestException, GoneException, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  GoneException,
+  NotFoundException,
+} from '@nestjs/common';
 
 describe('VerifyQrUseCase (Unit Tests)', () => {
   let useCase: VerifyQrUseCase;
@@ -108,5 +113,82 @@ describe('VerifyQrUseCase (Unit Tests)', () => {
         tripId: 'trip-different',
       }),
     ).rejects.toThrow(BadRequestException);
+  });
+
+  it('debe lanzar ConflictException (409 /errores/qr-reemplazado) si el token en Redis tiene estado REEMPLAZADO', async () => {
+    const oldRecord: QrTokenRecord = {
+      id: 'uuid-old',
+      token: 'qr_trip-1_old',
+      tripId: 'trip-1',
+      passengerId: 'pass-1',
+      isUsed: false,
+      usedAt: null,
+      expiresAt: new Date(Date.now() + 60000),
+      createdAt: new Date(),
+    };
+
+    mockRepo.findByToken.mockResolvedValue(oldRecord);
+    mockRedis.get.mockImplementation(async (key: string) => {
+      if (key === 'qr:qr_trip-1_old') {
+        return JSON.stringify({
+          token: 'qr_trip-1_old',
+          tripId: 'trip-1',
+          passengerId: 'pass-1',
+          expiresAt: oldRecord.expiresAt.toISOString(),
+          isUsed: false,
+          estado: 'REEMPLAZADO',
+        });
+      }
+      return null;
+    });
+
+    try {
+      await useCase.execute({
+        token: 'qr_trip-1_old',
+        tripId: 'trip-1',
+      });
+      fail('Debió lanzar ConflictException');
+    } catch (err: any) {
+      expect(err).toBeInstanceOf(ConflictException);
+      expect(err.getStatus()).toBe(409);
+      expect(err.getResponse()).toEqual(
+        expect.objectContaining({
+          type: '/errores/qr-reemplazado',
+          title: 'El QR fue reemplazado',
+        }),
+      );
+    }
+
+    expect(mockRepo.markAsUsed).not.toHaveBeenCalled();
+  });
+
+  it('debe lanzar ConflictException (409 /errores/qr-reemplazado) si trip:{viajeId}:active_token en Redis apunta a un token más reciente', async () => {
+    const oldRecord: QrTokenRecord = {
+      id: 'uuid-old-2',
+      token: 'qr_trip-2_old',
+      tripId: 'trip-2',
+      passengerId: 'pass-1',
+      isUsed: false,
+      usedAt: null,
+      expiresAt: new Date(Date.now() + 60000),
+      createdAt: new Date(),
+    };
+
+    mockRepo.findByToken.mockResolvedValue(oldRecord);
+    mockRedis.get.mockImplementation(async (key: string) => {
+      if (key === 'trip:trip-2:active_token') {
+        return 'qr_trip-2_newer';
+      }
+      return null;
+    });
+
+    await expect(
+      useCase.execute({
+        token: 'qr_trip-2_old',
+        tripId: 'trip-2',
+      }),
+    ).rejects.toThrow(ConflictException);
+
+    expect(mockRepo.markAsUsed).not.toHaveBeenCalled();
   });
 });

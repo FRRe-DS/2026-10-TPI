@@ -5,6 +5,7 @@ import {
   NotFoundException,
   GoneException,
   BadRequestException,
+  ConflictException,
 } from '@nestjs/common';
 import { VerifyQrDto } from '../dto/documents.dto';
 import {
@@ -28,12 +29,14 @@ export interface VerifyQrResult {
  * 1. Token o tripId faltantes => 400 Bad Request.
  * 2. Token inexistente en persistencia y caché => 404 Not Found.
  * 3. Token no correspondiente al viaje indicado => 400 Bad Request.
- * 4. Token ya consumido previamente o expirado => 410 Gone.
- * 5. Consumo atómico (RNF-08):
+ * 4. Token en estado REEMPLAZADO (o superado por un nuevo trip:{viajeId}:active_token) =>
+ *    409 Conflict (/errores/qr-reemplazado).
+ * 5. Token ya consumido previamente o expirado => 410 Gone.
+ * 6. Consumo atómico (RNF-08):
  *    Se ejecuta markAsUsed condicionalmente sobre la persistencia. Si dos solicitudes
  *    concurrentes intentan validar el mismo token simultáneamente, el motor garantiza
  *    que solo una consiga count > 0; la perdedora recibe false y lanza 410 Gone.
- * 6. Se elimina la clave en Redis con getDel para invalidar la caché inmediatamente.
+ * 7. Se elimina la clave en Redis con getDel para invalidar la caché inmediatamente.
  */
 @Injectable()
 export class VerifyQrUseCase {
@@ -53,14 +56,14 @@ export class VerifyQrUseCase {
       throw new BadRequestException('Token y tripId son obligatorios.');
     }
 
-    // 1. Consultar persistencia
+    // 1. Consultar persistencia y estado efímero en Redis
     const tokenRecord = await this.qrTokenRepo.findByToken(token);
-
-    // Si no está en BD, consultar caché efímera de Redis
+    const cached = await this.redis.get(`qr:${token}`);
     let cachedData: any = null;
-    if (!tokenRecord) {
-      const cached = await this.redis.get(`qr:${token}`);
-      if (cached) {
+    if (cached) {
+      if (cached === 'REEMPLAZADO') {
+        cachedData = { token, tripId, estado: 'REEMPLAZADO' };
+      } else {
         try {
           cachedData = JSON.parse(cached);
         } catch {
@@ -76,18 +79,52 @@ export class VerifyQrUseCase {
 
     // 2. Validar pertenencia del viaje
     const expectedTripId = tokenRecord?.tripId ?? cachedData?.tripId;
-    if (expectedTripId !== tripId) {
+    if (expectedTripId && expectedTripId !== tripId) {
       throw new BadRequestException('El código QR no corresponde a este viaje.');
     }
 
-    // 3. Validar estado de uso previo
-    if (tokenRecord?.isUsed || cachedData?.isUsed) {
+    // 3. Verificar estado REEMPLAZADO en Redis (409 Conflict - /errores/qr-reemplazado)
+    const wasAlreadyUsed = Boolean(tokenRecord?.isUsed || cachedData?.isUsed);
+    let isReplaced =
+      !wasAlreadyUsed &&
+      (cachedData?.estado === 'REEMPLAZADO' ||
+        cachedData?.status === 'REEMPLAZADO' ||
+        cachedData?.isReplaced === true);
+
+    if (!isReplaced && !wasAlreadyUsed) {
+      const activeTokenRaw = await this.redis.get(`trip:${tripId}:active_token`);
+      if (activeTokenRaw) {
+        let activeToken = activeTokenRaw.trim();
+        if (activeToken.startsWith('{')) {
+          try {
+            activeToken = JSON.parse(activeToken)?.token ?? token;
+          } catch {
+            activeToken = token;
+          }
+        }
+        if (activeToken && activeToken !== token) {
+          isReplaced = true;
+        }
+      }
+    }
+
+    if (isReplaced) {
+      throw new ConflictException({
+        type: '/errores/qr-reemplazado',
+        title: 'El QR fue reemplazado',
+        detail:
+          'El código QR fue reemplazado por uno más reciente para el mismo viaje y ya no es válido.',
+      });
+    }
+
+    // 4. Validar estado de uso previo
+    if (wasAlreadyUsed) {
       throw new GoneException(
         'El código QR ya fue utilizado anteriormente (código de un solo uso consumido).',
       );
     }
 
-    // 4. Validar expiración (TTL)
+    // 5. Validar expiración (TTL)
     const expiresAt = tokenRecord
       ? new Date(tokenRecord.expiresAt)
       : new Date(cachedData.expiresAt);
@@ -96,7 +133,7 @@ export class VerifyQrUseCase {
       throw new GoneException('El código QR ha expirado (tiempo de validez agotado).');
     }
 
-    // 5. Consumo atómico contra condiciones de carrera (RNF-08)
+    // 6. Consumo atómico contra condiciones de carrera (RNF-08)
     const usedAt = new Date();
     const consumed = await this.qrTokenRepo.markAsUsed(token, usedAt);
 
@@ -106,8 +143,9 @@ export class VerifyQrUseCase {
       );
     }
 
-    // 6. Eliminar clave activa de Redis para invalidación atómica inmediata
+    // 7. Eliminar clave activa de Redis para invalidación atómica inmediata
     await this.redis.getDel(`qr:${token}`);
+    await this.redis.del(`trip:${tripId}:active_token`);
 
     this.logger.log(`QR verificado y consumido exitosamente para viaje ${tripId}`);
 

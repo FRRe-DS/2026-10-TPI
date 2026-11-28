@@ -15,6 +15,11 @@ export interface CreateNotificationLog {
   referenceType?: string;
 }
 
+export type UpdateNotificationLog = Pick<
+  CreateNotificationLog,
+  'status' | 'retryCount' | 'lastError'
+>;
+
 export interface NotificationLogRecord extends CreateNotificationLog {
   id: string;
   createdAt: Date;
@@ -28,7 +33,11 @@ export interface NotificationLogFilters {
 
 export abstract class NotificationLogRepositoryPort {
   abstract create(log: CreateNotificationLog): Promise<Pick<NotificationLogRecord, 'id'>>;
-  abstract findByEventId?(eventId: string): Promise<NotificationLogRecord | null>;
+  abstract update(
+    id: string,
+    log: UpdateNotificationLog,
+  ): Promise<Pick<NotificationLogRecord, 'id'>>;
+  abstract findByEventId(eventId: string): Promise<NotificationLogRecord | null>;
   abstract findById?(id: string): Promise<NotificationLogRecord | null>;
   abstract findMany(filters?: NotificationLogFilters): Promise<NotificationLogRecord[]>;
 }

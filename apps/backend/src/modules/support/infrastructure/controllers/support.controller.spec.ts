@@ -1,5 +1,10 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { ForbiddenException, UnauthorizedException, UnprocessableEntityException } from '@nestjs/common';
+import {
+  ForbiddenException,
+  NotFoundException,
+  UnauthorizedException,
+  UnprocessableEntityException,
+} from '@nestjs/common';
 import { SupportController } from './support.controller';
 import { SupportService } from '../../application/support.service';
 import {
@@ -188,6 +193,63 @@ describe('SupportController (RF-8.7)', () => {
       await expect(
         controller.obtenerTicketUnificado('ticket-uuid-1', otroClienteJwt),
       ).rejects.toThrow(ForbiddenException);
+    });
+
+    it('GET /tickets/:ticketId/historial debe devolver historial cronológico paginado y aplicar RBAC/404', async () => {
+      const entries = [
+        {
+          estadoAnterior: 'ABIERTO',
+          estadoNuevo: 'EN_REVISION',
+          actorId: 'op-1',
+          cambiadoEn: '2026-11-28T10:00:00.000Z',
+        },
+        {
+          estadoAnterior: 'EN_REVISION',
+          estadoNuevo: 'RESUELTO',
+          actorId: 'op-1',
+          motivo: 'Reintegro realizado',
+          cambiadoEn: '2026-11-28T10:05:00.000Z',
+        },
+        {
+          estadoAnterior: 'RESUELTO',
+          estadoNuevo: 'EN_REVISION',
+          actorId: 'op-2',
+          motivo: 'Reabierto por nueva evidencia',
+          cambiadoEn: '2026-11-28T10:10:00.000Z',
+        },
+      ];
+      (service.getHistory as jest.Mock).mockResolvedValueOnce(entries);
+
+      const clientePropioJwt = `Bearer eyJhbGciOiJIUzI1NiJ9.${Buffer.from(
+        JSON.stringify({ sub: 'usr-pass-456', rol: 'CLIENTE' }),
+      ).toString('base64url')}.sig`;
+
+      const page0 = await controller.listarHistorialTicket(
+        'ticket-uuid-1',
+        '0',
+        '2',
+        clientePropioJwt,
+      );
+      expect(page0).toEqual({
+        page: 0,
+        size: 2,
+        totalElementos: 3,
+        totalPaginas: 2,
+        items: entries.slice(0, 2),
+        elementos: entries.slice(0, 2),
+      });
+
+      const otroClienteJwt = `Bearer eyJhbGciOiJIUzI1NiJ9.${Buffer.from(
+        JSON.stringify({ sub: 'usr-otro-999', rol: 'CLIENTE' }),
+      ).toString('base64url')}.sig`;
+      await expect(
+        controller.listarHistorialTicket('ticket-uuid-1', '0', '10', otroClienteJwt),
+      ).rejects.toThrow(ForbiddenException);
+
+      (service.findOne as jest.Mock).mockRejectedValueOnce(new NotFoundException('No existe'));
+      await expect(
+        controller.listarHistorialTicket('ticket-inexistente', '0', '10', clientePropioJwt),
+      ).rejects.toThrow(NotFoundException);
     });
   });
 });

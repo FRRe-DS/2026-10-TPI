@@ -19,7 +19,10 @@ import {
 } from 'class-validator';
 import { NotificationsService } from '../notifications/application/notifications.service';
 import { NotificationChannelDto } from '../notifications/application/dto/send-notification.dto';
-import { RegisterReceiptUseCase } from '../documents/application/use-cases/register-receipt.use-case';
+import {
+  IssuedReceipt,
+  IssueReceiptUseCase,
+} from '../documents/application/use-cases/issue-receipt.use-case';
 import { RedisService } from '../../common/redis.service';
 import {
   checkIdempotency,
@@ -191,10 +194,12 @@ const EVENT_SUBJECTS: Record<string, string> = {
 export class EventsController {
   private readonly logger = new Logger(EventsController.name);
   private readonly processedEvents = new Map<string, { hash: string; response: any }>();
+  private readonly completedMilestones = new Set<string>();
+  private readonly receiptPdfDeliveredTrips = new Set<string>();
 
   constructor(
     private readonly notificationsService: NotificationsService,
-    private readonly registerReceiptUseCase: RegisterReceiptUseCase,
+    private readonly issueReceiptUseCase: IssueReceiptUseCase,
     @Optional() private readonly redis?: RedisService,
   ) {}
 
@@ -252,37 +257,73 @@ export class EventsController {
       recibidoEn,
     };
 
-    // 1. Si el evento implica emisión de comprobante (RF-8.4)
+    // 1. Evitar repetir un mismo aviso terminal si el emisor reenvía el mismo hito con otro eventoId
     const tipoUpper = dto.tipo.toUpperCase();
+    const milestoneKey = this.resolveTerminalMilestoneKey(tipoUpper, dto);
+    if (milestoneKey && (await this.isMilestoneAlreadyProcessed(milestoneKey))) {
+      this.logger.log(
+        `[EVENTOS] Hito terminal ya procesado (${milestoneKey}); se omite aviso repetido para evento ${dto.eventoId}`,
+      );
+      await saveIdempotency(
+        this.processedEvents,
+        this.redis,
+        'evento',
+        dto.eventoId,
+        bodyHash,
+        response,
+      );
+      return response;
+    }
+
+    // 2. Si el evento implica emisión de comprobante (RF-8.4)
     const emitsReceipt =
       tipoUpper === 'VIAJE_FINALIZADO' ||
       tipoUpper === 'PAGO_CAPTURADO' ||
       tipoUpper === 'REINTEGRO_REGISTRADO';
 
     const tripIdForReceipt = dto.viajeId ?? dto.pagoId;
-    if (emitsReceipt && tripIdForReceipt) {
-      const clienteDest =
+    const hasExplicitAmount =
+      typeof dto.detalle?.importe?.monto === 'number' && dto.detalle.importe.monto > 0;
+    // Según contrato: VIAJE_FINALIZADO dispara el comprobante cuando informa el importe; si M6
+    // no envía importe, no se inventa un monto falso y lo emitirá PAGO_CAPTURADO desde M7.
+    const shouldIssueReceipt =
+      emitsReceipt &&
+      Boolean(tripIdForReceipt) &&
+      (tipoUpper !== 'VIAJE_FINALIZADO' || hasExplicitAmount);
+
+    let issued: IssuedReceipt | undefined;
+    let clienteDest: DestinatarioEventoDto | undefined;
+    let pdfAlreadyDeliveredForTrip = false;
+
+    if (shouldIssueReceipt && tripIdForReceipt) {
+      clienteDest =
         dto.destinatarios.find((d) => d.rol?.toUpperCase() === 'CLIENTE') ??
         dto.destinatarios[0];
       const passengerId = clienteDest?.usuarioId || `usr-${tripIdForReceipt}`;
       const passengerEmail =
         clienteDest?.email || `${passengerId}@notificaciones.m8.local`;
-      const amount =
-        dto.detalle?.importe?.monto && dto.detalle.importe.monto > 0
-          ? dto.detalle.importe.monto
-          : 3500;
+      const amount = hasExplicitAmount ? dto.detalle!.importe!.monto! : 3500;
       const currency = dto.detalle?.importe?.moneda || 'ARS';
 
-      await this.registerReceiptUseCase.execute({
+      pdfAlreadyDeliveredForTrip = await this.wasReceiptPdfDelivered(tripIdForReceipt);
+
+      // Emisión automática: registra (idempotente) y genera el PDF como consecuencia del
+      // hito. Si el PDF falla, el comprobante queda registrado y el evento sigue su curso.
+      issued = await this.issueReceiptUseCase.execute({
         tripId: tripIdForReceipt,
         passengerId,
         passengerEmail,
         amount,
         currency,
       });
+      if (!issued.pdf) {
+        this.logger.warn(
+          `[EVENTOS] Comprobante ${issued.receipt.receiptCode} registrado sin PDF generado: ${issued.pdfError}`,
+        );
+      }
     }
 
-    // 2. Despachar notificaciones multicanal a cada destinatario (RF-8.1, RF-8.2)
+    // 3. Despachar notificaciones multicanal a cada destinatario sin repetir al mismo contacto (RF-8.1, RF-8.2)
     const referenceId = dto.viajeId ?? dto.reservaId ?? dto.pagoId;
     const referenceType = dto.viajeId
       ? 'TRIP'
@@ -293,6 +334,7 @@ export class EventsController {
       EVENT_SUBJECTS[tipoUpper] ?? `Notificación de ${dto.tipo} (${dto.origen})`;
     const content = this.buildEventMessage(dto);
 
+    const notifiedTargets = new Set<string>();
     for (let i = 0; i < dto.destinatarios.length; i++) {
       const dest = dto.destinatarios[i];
       const preferred = dest.canalesPreferidos?.[0]?.toUpperCase();
@@ -310,10 +352,23 @@ export class EventsController {
             ? dest.telefono || dest.usuarioId
             : dest.usuarioId;
 
+      const targetKey = `${channel}:${recipient.toLowerCase()}`;
+      if (notifiedTargets.has(targetKey)) {
+        continue;
+      }
+      notifiedTargets.add(targetKey);
+
       const perRecipientEventId =
         dto.destinatarios.length === 1 ? dto.eventoId : `${dto.eventoId}:${i}`;
 
-      await this.notificationsService.send(
+      const shouldAttachPdf =
+        Boolean(issued?.pdf) &&
+        !pdfAlreadyDeliveredForTrip &&
+        channel === NotificationChannelDto.EMAIL &&
+        dest === clienteDest &&
+        dest.rol?.toUpperCase() !== 'CONDUCTOR';
+
+      const sendResult = await this.notificationsService.send(
         {
           channel,
           recipient,
@@ -321,9 +376,29 @@ export class EventsController {
           content,
           referenceId,
           referenceType,
+          ...(shouldAttachPdf && issued?.pdf
+            ? {
+                attachments: [
+                  {
+                    filename: `comprobante-${issued.receipt.receiptCode}.pdf`,
+                    content: issued.pdf,
+                    contentType: 'application/pdf',
+                  },
+                ],
+              }
+            : {}),
         },
         perRecipientEventId,
       );
+
+      if (shouldAttachPdf && sendResult?.success && tripIdForReceipt) {
+        await this.markReceiptPdfDelivered(tripIdForReceipt);
+        pdfAlreadyDeliveredForTrip = true;
+      }
+    }
+
+    if (milestoneKey) {
+      await this.markMilestoneProcessed(milestoneKey);
     }
 
     await saveIdempotency(
@@ -337,6 +412,54 @@ export class EventsController {
     this.logger.log(`[EVENTOS] Hito ${dto.tipo} (${dto.eventoId}) procesado desde ${dto.origen}`);
 
     return response;
+  }
+
+  private resolveTerminalMilestoneKey(tipoUpper: string, dto: EventoEntradaDto): string | null {
+    if (tipoUpper === 'VIAJE_FINALIZADO' && dto.viajeId) {
+      return `VIAJE_FINALIZADO:${dto.viajeId}`;
+    }
+    if (tipoUpper === 'VIAJE_CANCELADO' && dto.viajeId) {
+      return `VIAJE_CANCELADO:${dto.viajeId}`;
+    }
+    if (tipoUpper === 'PAGO_CAPTURADO' && (dto.pagoId ?? dto.viajeId)) {
+      return `PAGO_CAPTURADO:${dto.pagoId ?? dto.viajeId}`;
+    }
+    if (tipoUpper === 'REINTEGRO_REGISTRADO' && (dto.pagoId ?? dto.viajeId)) {
+      return `REINTEGRO_REGISTRADO:${dto.pagoId ?? dto.viajeId}`;
+    }
+    return null;
+  }
+
+  private async isMilestoneAlreadyProcessed(key: string): Promise<boolean> {
+    if (this.completedMilestones.has(key)) return true;
+    if (this.redis) {
+      const cached = await this.redis.get(`evento:milestone:${key}`).catch(() => null);
+      if (cached) return true;
+    }
+    return false;
+  }
+
+  private async markMilestoneProcessed(key: string): Promise<void> {
+    this.completedMilestones.add(key);
+    if (this.redis) {
+      await this.redis.set(`evento:milestone:${key}`, '1', 86400).catch(() => undefined);
+    }
+  }
+
+  private async wasReceiptPdfDelivered(tripId: string): Promise<boolean> {
+    if (this.receiptPdfDeliveredTrips.has(tripId)) return true;
+    if (this.redis) {
+      const cached = await this.redis.get(`receipt:pdf-sent:${tripId}`).catch(() => null);
+      if (cached) return true;
+    }
+    return false;
+  }
+
+  private async markReceiptPdfDelivered(tripId: string): Promise<void> {
+    this.receiptPdfDeliveredTrips.add(tripId);
+    if (this.redis) {
+      await this.redis.set(`receipt:pdf-sent:${tripId}`, '1', 86400).catch(() => undefined);
+    }
   }
 
   private buildEventMessage(dto: EventoEntradaDto): string {

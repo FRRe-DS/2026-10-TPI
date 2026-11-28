@@ -5,6 +5,7 @@ import {
   NotificationLogFilters,
   NotificationLogRecord,
   NotificationLogRepositoryPort,
+  UpdateNotificationLog,
 } from '../../domain/ports/notification-log.repository.port';
 
 @Injectable()
@@ -26,6 +27,20 @@ export class PrismaNotificationLogRepository extends NotificationLogRepositoryPo
         lastError: log.lastError,
         referenceId: log.referenceId,
         referenceType: log.referenceType,
+      },
+    });
+  }
+
+  async update(
+    id: string,
+    log: UpdateNotificationLog,
+  ): Promise<Pick<NotificationLogRecord, 'id'>> {
+    return this.prisma.notificationLog.update({
+      where: { id },
+      data: {
+        status: log.status as any,
+        retryCount: log.retryCount,
+        lastError: log.lastError,
       },
     });
   }

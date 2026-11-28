@@ -109,7 +109,13 @@ export class PrismaSupportTicketRepository implements SupportTicketRepositoryPor
         try {
           const parsed = JSON.parse(row.message);
           if (parsed && parsed.estadoNuevo) {
-            entries.push(parsed);
+            entries.push({
+              estadoAnterior: parsed.estadoAnterior,
+              estadoNuevo: parsed.estadoNuevo,
+              actorId: parsed.actorId ?? row.sender,
+              ...(parsed.motivo ? { motivo: parsed.motivo } : {}),
+              cambiadoEn: parsed.cambiadoEn ?? row.createdAt.toISOString(),
+            });
           }
         } catch {
           // Ignorar mensajes no estructurados

@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { forwardRef, Module } from '@nestjs/common';
 import { DocumentsController } from './infrastructure/controllers/documents.controller';
 import { DocumentsService } from './application/documents.service';
 import { NotificationsModule } from '../notifications/notifications.module';
@@ -17,8 +17,10 @@ import {
 } from './domain/ports/receipt.repository.port';
 import { PrismaReceiptRepository } from './infrastructure/persistence/prisma-receipt.repository';
 import { RegisterReceiptUseCase } from './application/use-cases/register-receipt.use-case';
+import { IssueReceiptUseCase } from './application/use-cases/issue-receipt.use-case';
 import { ResendReceiptUseCase } from './application/use-cases/resend-receipt.use-case';
 import { NotificationsService } from '../notifications/application/notifications.service';
+import { TripCompletedConsumer } from '../notifications/infrastructure/messaging/trip-completed.consumer';
 
 import {
   QR_TOKEN_REPOSITORY_PORT,
@@ -29,7 +31,7 @@ import { GenerateQrUseCase } from './application/use-cases/generate-qr.use-case'
 import { VerifyQrUseCase } from './application/use-cases/verify-qr.use-case';
 
 @Module({
-  imports: [NotificationsModule],
+  imports: [forwardRef(() => NotificationsModule)],
   controllers: [DocumentsController],
   providers: [
     // --- Puerto de persistencia de tokens QR (RF-8.3, RNF-08) ---
@@ -76,6 +78,17 @@ import { VerifyQrUseCase } from './application/use-cases/verify-qr.use-case';
         new RegisterReceiptUseCase(repo),
       inject: [RECEIPT_REPOSITORY_PORT],
     },
+    TripCompletedConsumer,
+
+    // --- Emisión automática del comprobante + PDF al confirmarse el viaje (RF-8.4) ---
+    {
+      provide: IssueReceiptUseCase,
+      useFactory: (
+        register: RegisterReceiptUseCase,
+        pdfGen: GenerateReceiptPdfUseCase,
+      ) => new IssueReceiptUseCase(register, pdfGen),
+      inject: [RegisterReceiptUseCase, GenerateReceiptPdfUseCase],
+    },
 
     // --- Reenvío de comprobantes con adjunto PDF (RF-8.5) ---
     {
@@ -95,6 +108,7 @@ import { VerifyQrUseCase } from './application/use-cases/verify-qr.use-case';
   exports: [
     DocumentsService,
     RegisterReceiptUseCase,
+    IssueReceiptUseCase,
     ResendReceiptUseCase,
     GenerateQrUseCase,
     VerifyQrUseCase,

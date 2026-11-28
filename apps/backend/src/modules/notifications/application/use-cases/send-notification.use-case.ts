@@ -1,6 +1,9 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { SendNotificationDto } from '../dto/send-notification.dto';
-import { NotificationLogRepositoryPort } from '../../domain/ports/notification-log.repository.port';
+import {
+  NotificationLogRecord,
+  NotificationLogRepositoryPort,
+} from '../../domain/ports/notification-log.repository.port';
 import { NotificationSenderPort } from '../../domain/ports/notification-sender.port';
 
 @Injectable()
@@ -13,23 +16,29 @@ export class SendNotificationUseCase {
     private readonly notificationLogRepository: NotificationLogRepositoryPort,
   ) {}
 
-  async execute(dto: SendNotificationDto, eventId?: string, retryPending = false) {
-    if (eventId && this.notificationLogRepository.findByEventId) {
-      const existing = await this.notificationLogRepository.findByEventId(eventId);
-      if (existing) {
-        if (existing.status === 'SENT') {
+  async execute(
+    dto: SendNotificationDto,
+    eventId?: string,
+    retryPending = false,
+    deferRetriesToQueue = false,
+  ) {
+    let existingLog: NotificationLogRecord | null = null;
+    if (eventId) {
+      existingLog = await this.notificationLogRepository.findByEventId(eventId);
+      if (existingLog) {
+        if (existingLog.status === 'SENT') {
           return {
             success: true,
-            id: existing.id,
+            id: existingLog.id,
             status: 'SENT' as const,
             duplicate: true,
             retryable: false,
           };
         }
-        if (existing.status === 'PENDING' && !retryPending) {
+        if (existingLog.status === 'PENDING' && !retryPending) {
           return {
             success: false,
-            id: existing.id,
+            id: existingLog.id,
             status: 'PENDING' as const,
             duplicate: true,
             retryable: true,
@@ -38,12 +47,13 @@ export class SendNotificationUseCase {
       }
     }
 
-    let status: 'SENT' | 'FAILED' = 'SENT';
+    let status: 'SENT' | 'PENDING' | 'FAILED' = 'SENT';
     let errorMessage: string | null = null;
     let retryCount = 0;
+    const maxRetries = deferRetriesToQueue ? 0 : this.maxRetries;
 
     if (dto.channel === 'EMAIL') {
-      for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
+      for (let attempt = 0; attempt <= maxRetries; attempt++) {
         try {
           await this.sender.send({
             channel: dto.channel as any,
@@ -59,15 +69,15 @@ export class SendNotificationUseCase {
           break;
         } catch (error) {
           errorMessage = error instanceof Error ? error.message : String(error);
-          status = 'FAILED';
-          if (attempt < this.maxRetries) {
+          status = deferRetriesToQueue ? 'PENDING' : 'FAILED';
+          if (attempt < maxRetries) {
             retryCount++;
             this.logger.warn(
-              `Error enviando email: ${errorMessage}. Reintento ${retryCount}/${this.maxRetries}`,
+              `Error enviando email: ${errorMessage}. Reintento ${retryCount}/${maxRetries}`,
             );
           } else {
             this.logger.warn(
-              `Error enviando email a ${dto.recipient} luego de ${this.maxRetries} reintentos: ${errorMessage}`,
+              `Error enviando email a ${dto.recipient} luego de ${maxRetries} reintentos: ${errorMessage}`,
             );
           }
         }
@@ -78,24 +88,30 @@ export class SendNotificationUseCase {
       this.logger.warn(errorMessage);
     }
 
-    const log = await this.notificationLogRepository.create({
-      eventId: eventId || null,
-      channel: dto.channel as any,
-      recipient: dto.recipient,
-      subject: dto.subject,
-      content: dto.content,
-      status,
-      retryCount,
-      lastError: errorMessage,
-      referenceId: dto.referenceId,
-      referenceType: dto.referenceType,
-    });
+    const log = existingLog
+      ? await this.notificationLogRepository.update(existingLog.id, {
+          status,
+          retryCount: existingLog.retryCount + retryCount + 1,
+          lastError: errorMessage,
+        })
+      : await this.notificationLogRepository.create({
+          eventId: eventId || null,
+          channel: dto.channel as any,
+          recipient: dto.recipient,
+          subject: dto.subject,
+          content: dto.content,
+          status,
+          retryCount,
+          lastError: errorMessage,
+          referenceId: dto.referenceId,
+          referenceType: dto.referenceType,
+        });
 
     return {
       success: status === 'SENT',
       id: log.id,
       status,
-      ...(eventId ? { retryable: status === 'FAILED' } : {}),
+      ...(eventId ? { retryable: status !== 'SENT' } : {}),
     };
   }
 }

@@ -81,10 +81,10 @@ export interface SupportTicketRepositoryPort {
   /** Actualiza estado y nota de resolución del ticket identificado por su UUID. */
   updateStatus(id: string, data: UpdateSupportTicketStatusData): Promise<SupportTicketRecord>;
 
-  /** Registra un cambio de estado en el historial del ticket (opcional). */
+  /** Registra un cambio de estado en el historial del ticket. */
   appendHistory?(ticketId: string, entry: SupportTicketHistoryEntry): Promise<void>;
 
-  /** Obtiene el historial cronológico de cambios de estado del ticket (opcional). */
+  /** Obtiene el historial cronológico de cambios de estado del ticket. */
   getHistory?(ticketId: string): Promise<SupportTicketHistoryEntry[]>;
 }
 

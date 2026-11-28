@@ -191,4 +191,30 @@ describe('VerifyQrUseCase (Unit Tests)', () => {
 
     expect(mockRepo.markAsUsed).not.toHaveBeenCalled();
   });
+
+  it('RNF-19: debe enmascarar el token opaco en los logs de consola al verificar un QR válido', async () => {
+    const secretToken = 'qr_trip-priv_0123456789abcdef0123456789abcdef';
+    const validRecord: QrTokenRecord = {
+      id: 'uuid-priv',
+      token: secretToken,
+      tripId: 'trip-priv',
+      passengerId: 'pass-secret-999',
+      isUsed: false,
+      usedAt: null,
+      expiresAt: new Date(Date.now() + 60000),
+      createdAt: new Date(),
+    };
+
+    mockRepo.findByToken.mockResolvedValue(validRecord);
+    mockRepo.markAsUsed.mockResolvedValue(true);
+    const logSpy = jest.spyOn((useCase as any).logger, 'log');
+
+    await useCase.execute({
+      token: secretToken,
+      tripId: 'trip-priv',
+    });
+
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('token=qr_***_cdef'));
+    expect(logSpy).not.toHaveBeenCalledWith(expect.stringContaining(secretToken));
+  });
 });

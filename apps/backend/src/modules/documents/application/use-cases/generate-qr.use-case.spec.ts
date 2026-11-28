@@ -108,4 +108,25 @@ describe('GenerateQrUseCase (Unit Tests)', () => {
       300,
     );
   });
+
+  it('RNF-19: el token QR debe ser estrictamente opaco (sin passengerId ni PII) y enmascararse en los logs de consola', async () => {
+    mockRedis.get.mockResolvedValue(null);
+    const logSpy = jest.spyOn((useCase as any).logger, 'log');
+
+    const result = await useCase.execute({
+      tripId: 'trip-privacy-01',
+      passengerId: 'usr-dni-42123456-luca@correo.com',
+      ttlSeconds: 300,
+    });
+
+    // El token opaco no debe exponer el passengerId, DNI ni correo del pasajero
+    expect(result.token).toMatch(/^qr_trip-privacy-01_[0-9a-f]{32}$/);
+    expect(result.token).not.toContain('usr-dni');
+    expect(result.token).not.toContain('42123456');
+    expect(result.token).not.toContain('luca@correo.com');
+
+    // En logs de consola el token completo no debe aparecer en texto plano, sino enmascarado (qr_***_xxxx)
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('token=qr_***_'));
+    expect(logSpy).not.toHaveBeenCalledWith(expect.stringContaining(result.token));
+  });
 });

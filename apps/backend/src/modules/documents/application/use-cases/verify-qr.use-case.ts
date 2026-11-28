@@ -13,6 +13,7 @@ import {
   QR_TOKEN_REPOSITORY_PORT,
 } from '../../domain/ports/qr-token.repository.port';
 import { RedisService } from '../../../../common/redis.service';
+import { maskQrToken, sanitizeTripIdForQrToken } from '../../../../common/privacy-masking.util';
 
 export interface VerifyQrResult {
   valid: boolean;
@@ -147,7 +148,9 @@ export class VerifyQrUseCase {
     await this.redis.getDel(`qr:${token}`);
     await this.redis.del(`trip:${tripId}:active_token`);
 
-    this.logger.log(`QR verificado y consumido exitosamente para viaje ${tripId}`);
+    this.logger.log(
+      `QR verificado y consumido exitosamente para viaje ${sanitizeTripIdForQrToken(tripId)} (token=${maskQrToken(token)})`,
+    );
 
     return {
       valid: true,

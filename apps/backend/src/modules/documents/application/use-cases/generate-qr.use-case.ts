@@ -5,6 +5,11 @@ import {
   QR_TOKEN_REPOSITORY_PORT,
 } from '../../domain/ports/qr-token.repository.port';
 import { RedisService } from '../../../../common/redis.service';
+import {
+  assertOpaqueQrPayload,
+  maskQrToken,
+  sanitizeTripIdForQrToken,
+} from '../../../../common/privacy-masking.util';
 import * as QRCode from 'qrcode';
 import * as crypto from 'crypto';
 
@@ -42,9 +47,14 @@ export class GenerateQrUseCase {
   async execute(dto: GenerateQrDto): Promise<GenerateQrResult> {
     const ttl = dto.ttlSeconds || 300;
     const randomHex = crypto.randomBytes(16).toString('hex');
-    const token = `qr_${dto.tripId}_${randomHex}`;
+    const safeTripPrefix = sanitizeTripIdForQrToken(dto.tripId);
+    const token = `qr_${safeTripPrefix}_${randomHex}`;
     const expiresAt = new Date(Date.now() + ttl * 1000);
     const activeTokenKey = `trip:${dto.tripId}:active_token`;
+
+    // Validación estricta RNF-19: el payload del QR solo lleva el token opaco criptográfico, sin datos personales
+    const forbiddenValues = dto.passengerId !== safeTripPrefix ? [dto.passengerId] : [];
+    assertOpaqueQrPayload(token, forbiddenValues);
 
     // 1. Si existía un QR previo en estado VIGENTE para este viaje, marcarlo como REEMPLAZADO
     const previousToken = await this.redis.get(activeTokenKey);
@@ -107,7 +117,9 @@ export class GenerateQrUseCase {
       scale: 8,
     });
 
-    this.logger.log(`QR generado para viaje ${dto.tripId} con TTL ${ttl}s`);
+    this.logger.log(
+      `QR generado para viaje ${safeTripPrefix} (token=${maskQrToken(token)}, TTL=${ttl}s)`,
+    );
 
     return {
       token,

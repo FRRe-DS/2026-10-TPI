@@ -3,6 +3,7 @@ import {
   NotFoundException,
   GoneException,
   BadRequestException,
+  ConflictException,
 } from '@nestjs/common';
 import { DocumentsService } from './documents.service';
 import { GenerateQrUseCase } from './use-cases/generate-qr.use-case';
@@ -305,6 +306,39 @@ describe('DocumentsService - Fachada y Casos de Uso QR (RF-8.3 / RNF-08)', () =>
         expect(rejected[0].reason).toBeInstanceOf(GoneException);
         expect((rejected[0].reason as GoneException).getStatus()).toBe(410);
       }
+    });
+
+    it('debe marcar el QR anterior como REEMPLAZADO en Redis al generar uno nuevo y lanzar ConflictException (409 /errores/qr-reemplazado) al intentar validar el viejo', async () => {
+      const firstQr = await service.generateQr({
+        tripId: 'trip-replace-redis',
+        passengerId: 'pass-100',
+        ttlSeconds: 300,
+      });
+
+      expect(mockRedisStorage.get('trip:trip-replace-redis:active_token')).toBe(firstQr.token);
+
+      const secondQr = await service.generateQr({
+        tripId: 'trip-replace-redis',
+        passengerId: 'pass-100',
+        ttlSeconds: 300,
+      });
+
+      expect(mockRedisStorage.get('trip:trip-replace-redis:active_token')).toBe(secondQr.token);
+      const firstCached = JSON.parse(mockRedisStorage.get(`qr:${firstQr.token}`)!);
+      expect(firstCached.estado).toBe('REEMPLAZADO');
+
+      await expect(
+        service.verifyQr({
+          token: firstQr.token,
+          tripId: 'trip-replace-redis',
+        }),
+      ).rejects.toThrow(ConflictException);
+
+      const validSecond = await service.verifyQr({
+        token: secondQr.token,
+        tripId: 'trip-replace-redis',
+      });
+      expect(validSecond.valid).toBe(true);
     });
   });
 });

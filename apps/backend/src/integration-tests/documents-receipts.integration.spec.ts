@@ -27,6 +27,7 @@ describe('Comprobantes PDF — API + Prisma + PostgreSQL temporal', () => {
 
   beforeEach(async () => {
     await ctx.database.reset();
+    ctx.mailer.sent.length = 0;
   });
 
   afterAll(async () => {
@@ -137,5 +138,90 @@ describe('Comprobantes PDF — API + Prisma + PostgreSQL temporal', () => {
 
     expect(res.body.message).toContain('trip-it-inexistente');
     expect(await ctx.prisma.documentReceipt.count()).toBe(0);
+  });
+
+  it('POST /api/v1/eventos (VIAJE_FINALIZADO) emite el comprobante en PostgreSQL, genera el PDF automáticamente y soporta descarga y reenvío canónicos', async () => {
+    const tripId = '77777777-7777-4777-8777-777777777777';
+    const passengerId = '88888888-8888-4888-8888-888888888888';
+
+    await ctx
+      .http()
+      .post('/api/v1/eventos')
+      .send({
+        eventoId: '99999999-9999-4999-8999-999999999999',
+        tipo: 'VIAJE_FINALIZADO',
+        origen: 'M6',
+        ocurridoEn: '2026-11-27T12:00:00.000Z',
+        viajeId: tripId,
+        destinatarios: [
+          {
+            usuarioId: passengerId,
+            rol: 'CLIENTE',
+            email: 'pasajero.canonico@ejemplo.com',
+            canalesPreferidos: ['EMAIL'],
+          },
+        ],
+        detalle: {
+          origen: 'Plaza 25 de Mayo',
+          destino: 'UTN FRRe',
+          importe: { monto: 4600, moneda: 'ARS' },
+        },
+      })
+      .expect(202);
+
+    const row = await ctx.prisma.documentReceipt.findFirstOrThrow({ where: { tripId } });
+    expect(ctx.mailer.sent).toHaveLength(1);
+    expect(ctx.mailer.sent[0].attachments?.[0]?.filename).toBe(`comprobante-${row.receiptCode}.pdf`);
+    expect(ctx.mailer.sent[0].attachments?.[0]?.contentType).toBe('application/pdf');
+    expect(Buffer.isBuffer(ctx.mailer.sent[0].attachments?.[0]?.content)).toBe(true);
+    expect(
+      (ctx.mailer.sent[0].attachments![0].content as Buffer).subarray(0, 5).toString('latin1'),
+    ).toBe('%PDF-');
+
+    // Descarga en el endpoint canónico GET /api/v1/comprobantes/{id}/pdf usando comprobanteId (UUID)
+    const downloadRes = await ctx
+      .http()
+      .get(`/api/v1/comprobantes/${row.id}/pdf`)
+      .buffer(true)
+      .parse(binaryParser)
+      .expect(200);
+
+    expect(downloadRes.headers['content-type']).toContain('application/pdf');
+    const downloadedPdf = downloadRes.body as Buffer;
+    expect(downloadedPdf.subarray(0, 5).toString('latin1')).toBe('%PDF-');
+    expect(downloadedPdf.toString('latin1')).toContain('%%EOF');
+
+    await ctx
+      .http()
+      .get('/api/v1/comprobantes/00000000-0000-4000-8000-000000000000/pdf')
+      .expect(404);
+
+    // Reenvío en el endpoint canónico POST /api/v1/comprobantes/{id}/reenvios
+    ctx.mailer.sent.length = 0;
+    const resendRes = await ctx
+      .http()
+      .post(`/api/v1/comprobantes/${row.id}/reenvios`)
+      .set('Idempotency-Key', 'idem-it-reenvio-001')
+      .send({ canal: 'EMAIL' })
+      .expect(202);
+
+    expect(resendRes.body).toMatchObject({
+      canal: 'EMAIL',
+      estado: 'ENVIADA',
+      comprobanteId: row.id,
+      codigoComprobante: row.receiptCode,
+    });
+    expect(ctx.mailer.sent).toHaveLength(1);
+    expect(ctx.mailer.sent[0].recipient).toBe('pasajero.canonico@ejemplo.com');
+    const resentAttachment = ctx.mailer.sent[0].attachments?.[0];
+    expect(resentAttachment?.filename).toBe(`comprobante-${row.receiptCode}.pdf`);
+    expect(resentAttachment?.contentType).toBe('application/pdf');
+    expect(Buffer.isBuffer(resentAttachment?.content)).toBe(true);
+    expect((resentAttachment!.content as Buffer).subarray(0, 5).toString('latin1')).toBe('%PDF-');
+
+    // No crea un segundo comprobante ni altera la fecha de emisión original
+    expect(await ctx.prisma.documentReceipt.count()).toBe(1);
+    const afterResend = await ctx.prisma.documentReceipt.findUniqueOrThrow({ where: { id: row.id } });
+    expect(afterResend.createdAt.toISOString()).toBe(row.createdAt.toISOString());
   });
 });

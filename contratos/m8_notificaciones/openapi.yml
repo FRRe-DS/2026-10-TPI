@@ -606,10 +606,11 @@ paths:
       operationId: reenviarComprobante
       summary: Volver a enviar el comprobante
       description: |
-        Envía el enlace de descarga al contacto registrado del cliente, nunca a
-        una dirección indicada en la solicitud. Genera una notificación, que
-        sigue la misma política de intentos que las demás. Si el comprobante no
-        está generado, `409`.
+        Reenvía el comprobante con el archivo PDF adjunto (`application/pdf`) al
+        contacto registrado del cliente, nunca a una dirección indicada en la
+        solicitud. Conserva la fecha de emisión original y genera una
+        notificación que sigue la misma política de intentos que las demás. Si
+        el comprobante no está generado, `409`.
       security:
         - bearerAuth: [CLIENTE, OPERADOR]
       parameters:

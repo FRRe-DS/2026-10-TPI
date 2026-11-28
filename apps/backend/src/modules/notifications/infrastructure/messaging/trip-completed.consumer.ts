@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
 import type { EventoEntrada } from '@g10-m8/contracts';
 import { isEmail } from 'class-validator';
 import {
@@ -9,7 +9,7 @@ import {
 import * as amqp from 'amqplib';
 import { NotificationsService } from '../../application/notifications.service';
 import { NotificationChannelDto } from '../../application/dto/send-notification.dto';
-import { RegisterReceiptUseCase } from '../../../documents/application/use-cases/register-receipt.use-case';
+import { IssueReceiptUseCase } from '../../../documents/application/use-cases/issue-receipt.use-case';
 
 const EVENTO_TIPOS: readonly EventoEntrada['tipo'][] = [
   'VIAJE_SOLICITADO',
@@ -49,7 +49,7 @@ export class TripCompletedConsumer implements OnModuleInit, OnModuleDestroy {
 
   constructor(
     private readonly notificationsService: NotificationsService,
-    private readonly registerReceiptUseCase: RegisterReceiptUseCase,
+    @Optional() private readonly issueReceiptUseCase?: IssueReceiptUseCase,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -179,6 +179,9 @@ export class TripCompletedConsumer implements OnModuleInit, OnModuleDestroy {
         message,
         mappedEvent,
         event.eventType === 'trip.completed',
+        event.eventType === 'trip.completed' && this.isRecord(event.data)
+          ? (this.getString(event.data.driverName) ?? undefined)
+          : undefined,
       );
       return;
     }
@@ -681,8 +684,11 @@ export class TripCompletedConsumer implements OnModuleInit, OnModuleDestroy {
     message: ConsumeMessage,
     event: EventoEntrada,
     registerTripReceipt = false,
+    driverName?: string,
   ): Promise<void> {
-    const dest = event.destinatarios[0];
+    const dest =
+      event.destinatarios.find((d) => d.rol?.toUpperCase() === 'CLIENTE') ??
+      event.destinatarios[0];
     const recipient = dest.email || `${dest.usuarioId}@notificaciones.m8.local`;
     const referenceId = event.viajeId ?? event.reservaId ?? event.pagoId;
     const referenceType = event.viajeId
@@ -725,28 +731,59 @@ export class TripCompletedConsumer implements OnModuleInit, OnModuleDestroy {
     }
 
     try {
-      if (registerTripReceipt) {
-        const tripId = event.viajeId;
-        const customer = event.destinatarios.find(
-          (destinatario) => destinatario.rol === 'CLIENTE',
+      const tipoUpper = event.tipo.toUpperCase();
+      const emitsReceipt =
+        tipoUpper === 'VIAJE_FINALIZADO' ||
+        tipoUpper === 'PAGO_CAPTURADO' ||
+        tipoUpper === 'REINTEGRO_REGISTRADO';
+      const tripIdForReceipt = event.viajeId ?? event.pagoId;
+      const hasExplicitAmount =
+        typeof event.detalle?.importe?.monto === 'number' &&
+        event.detalle.importe.monto > 0;
+      const shouldIssueReceipt =
+        registerTripReceipt ||
+        (emitsReceipt &&
+          Boolean(tripIdForReceipt) &&
+          (tipoUpper !== 'VIAJE_FINALIZADO' || hasExplicitAmount) &&
+          dest.rol?.toUpperCase() !== 'CONDUCTOR');
+
+      let attachments:
+        | Array<{ filename: string; content: Buffer; contentType: string }>
+        | undefined;
+
+      if (this.issueReceiptUseCase && shouldIssueReceipt && tripIdForReceipt) {
+        const amount = hasExplicitAmount
+          ? event.detalle!.importe!.monto
+          : registerTripReceipt &&
+              typeof event.detalle?.importe?.monto === 'number'
+            ? event.detalle.importe.monto
+            : 3500;
+        const currency = event.detalle?.importe?.moneda || 'ARS';
+        const issued = await this.issueReceiptUseCase.execute({
+          tripId: tripIdForReceipt,
+          passengerId: dest.usuarioId || `usr-${tripIdForReceipt}`,
+          passengerEmail: recipient,
+          amount,
+          currency,
+          ...(driverName ? { driverName } : {}),
+        });
+        contentParts.push(`Comprobante emitido: ${issued.receipt.receiptCode}.`);
+        this.logger.log(
+          `Comprobante ${issued.receipt.receiptCode} registrado para el viaje ${tripIdForReceipt}`,
         );
-        const amount = event.detalle?.importe;
-        if (!tripId || !customer?.email || !amount) {
-          throw new Error(
-            'El evento trip.completed no tiene los datos necesarios para emitir el comprobante.',
+        if (issued.pdf) {
+          attachments = [
+            {
+              filename: `comprobante-${issued.receipt.receiptCode}.pdf`,
+              content: issued.pdf,
+              contentType: 'application/pdf',
+            },
+          ];
+        } else {
+          this.logger.warn(
+            `Comprobante ${issued.receipt.receiptCode} registrado sin PDF generado: ${issued.pdfError}`,
           );
         }
-        const receipt = await this.registerReceiptUseCase.execute({
-          tripId,
-          passengerId: customer.usuarioId,
-          passengerEmail: customer.email,
-          amount: amount.monto,
-          currency: amount.moneda,
-        });
-        contentParts.push(`Comprobante emitido: ${receipt.receiptCode}.`);
-        this.logger.log(
-          `Comprobante ${receipt.receiptCode} registrado para el viaje ${tripId}`,
-        );
       }
 
       const content = contentParts.join(' ');
@@ -758,6 +795,7 @@ export class TripCompletedConsumer implements OnModuleInit, OnModuleDestroy {
           content,
           referenceId,
           referenceType,
+          ...(attachments ? { attachments } : {}),
         },
         event.eventoId,
         this.getRetryCount(message) > 0,

@@ -1,13 +1,14 @@
 import { ApiProperty } from '@nestjs/swagger';
 import {
   IsEmail,
+  IsIn,
   IsNotEmpty,
   IsNumber,
   IsOptional,
   IsPositive,
   IsString,
 } from 'class-validator';
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 
 export class GenerateQrDto {
   @ApiProperty({ example: 'trip-abc-123', description: 'ID del viaje al que corresponde el QR' })
@@ -275,24 +276,22 @@ export class RegistrarComprobanteUnificadoDto {
   currency?: string;
 }
 
+/**
+ * Cuerpo de POST /api/v1/comprobantes/{comprobanteId}/reenvios.
+ * Según el contrato coordinado (ReenvioComprobante) solo lleva el canal: el comprobante
+ * se envía SIEMPRE al contacto registrado del cliente, nunca a una dirección indicada
+ * en la solicitud. El PDF solo puede adjuntarse en el canal EMAIL.
+ */
 export class ReenviarComprobanteUnificadoDto {
-  @ApiProperty({ required: false, example: 'EMAIL', default: 'EMAIL', enum: ['EMAIL', 'SMS', 'PUSH'] })
+  @ApiProperty({
+    required: true,
+    example: 'EMAIL',
+    enum: ['EMAIL', 'SMS', 'PUSH'],
+    description: 'Canal de reenvío. El comprobante PDF adjunto solo se admite por EMAIL.',
+  })
+  @Transform(({ value }) => (typeof value === 'string' ? value.toUpperCase() : value))
   @IsString()
-  @IsOptional()
-  canal?: string;
-
-  @ApiProperty({ required: false, example: 'pasajero@ejemplo.com' })
-  @IsEmail()
-  @IsOptional()
-  emailDestino?: string;
-
-  @ApiProperty({ required: false, example: 'pasajero@ejemplo.com' })
-  @IsEmail()
-  @IsOptional()
-  email?: string;
-
-  @ApiProperty({ required: false, example: 'trip-abc-123' })
-  @IsString()
-  @IsOptional()
-  tripId?: string;
+  @IsNotEmpty()
+  @IsIn(['EMAIL', 'SMS', 'PUSH'])
+  canal: string;
 }

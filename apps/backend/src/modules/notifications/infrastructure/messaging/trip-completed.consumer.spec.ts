@@ -1,7 +1,7 @@
 import { ConsumeMessage, Channel, ChannelModel } from 'amqplib';
 import * as amqp from 'amqplib';
-import { RegisterReceiptUseCase } from '../../../documents/application/use-cases/register-receipt.use-case';
 import { NotificationsService } from '../../application/notifications.service';
+import { IssueReceiptUseCase } from '../../../documents/application/use-cases/issue-receipt.use-case';
 import { TripCompletedConsumer } from './trip-completed.consumer';
 
 describe('TripCompletedConsumer', () => {
@@ -118,14 +118,19 @@ describe('TripCompletedConsumer', () => {
     });
     markFailed = jest.fn().mockResolvedValue(undefined);
     registerReceipt = jest.fn().mockResolvedValue({
-      receiptCode: 'REC-2026-00001',
+      receipt: {
+        receiptCode: 'REC-2026-00001',
+      },
     });
-    consumer = new TripCompletedConsumer({
-      send,
-      markFailed,
-    } as unknown as NotificationsService, {
-      execute: registerReceipt,
-    } as unknown as RegisterReceiptUseCase);
+    consumer = new TripCompletedConsumer(
+      {
+        send,
+        markFailed,
+      } as unknown as NotificationsService,
+      {
+        execute: registerReceipt,
+      } as unknown as IssueReceiptUseCase,
+    );
   });
 
   afterEach(async () => {
@@ -203,6 +208,7 @@ describe('TripCompletedConsumer', () => {
       passengerEmail: 'pasajero@example.com',
       amount: 4500.5,
       currency: 'ARS',
+      driverName: 'Ana',
     });
     expect(registerReceipt.mock.invocationCallOrder[0]).toBeLessThan(
       send.mock.invocationCallOrder[0],
@@ -809,5 +815,273 @@ describe('TripCompletedConsumer', () => {
 
     expect(closeChannel).toHaveBeenCalled();
     expect(closeConnection).toHaveBeenCalled();
+  });
+
+  it('issues the receipt PDF automatically and attaches it when IssueReceiptUseCase is provided', async () => {
+    const pdfBuffer = Buffer.from('%PDF-1.3\nauto\n%%EOF\n', 'latin1');
+    const issueExecute = jest.fn().mockResolvedValue({
+      receipt: {
+        id: 'rec-auto-1',
+        receiptCode: 'REC-2026-AUTO01',
+        tripId: 'trip-123',
+        passengerId: 'passenger-1',
+        passengerEmail: 'pasajero@example.com',
+        amount: 4500.5,
+        currency: 'ARS',
+        driverName: 'Ana',
+        issuedAt: new Date('2026-10-22T14:00:00Z'),
+      },
+      pdf: pdfBuffer,
+    });
+    const consumerWithReceipts = new TripCompletedConsumer(
+      { send } as unknown as NotificationsService,
+      { execute: issueExecute } as unknown as IssueReceiptUseCase,
+    );
+
+    await consumerWithReceipts.onModuleInit();
+    const message = makeMessage(tripCompletedEvent);
+    messageHandler(message);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(issueExecute).toHaveBeenCalledWith({
+      tripId: 'trip-123',
+      passengerId: 'passenger-1',
+      passengerEmail: 'pasajero@example.com',
+      amount: 4500.5,
+      currency: 'ARS',
+      driverName: 'Ana',
+    });
+    expect(send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channel: 'EMAIL',
+        recipient: 'pasajero@example.com',
+        attachments: [
+          {
+            filename: 'comprobante-REC-2026-AUTO01.pdf',
+            content: pdfBuffer,
+            contentType: 'application/pdf',
+          },
+        ],
+      }),
+      'evt-trip-1',
+      false,
+      true,
+    );
+    expect(ack).toHaveBeenCalledWith(message);
+    await consumerWithReceipts.onModuleDestroy();
+  });
+
+  it('issues and attaches PDF for EventoEntrada VIAJE_FINALIZADO and PAGO_CAPTURADO, skipping CONDUCTOR', async () => {
+    const pdfBuffer = Buffer.from('%PDF-1.4\nevento\n%%EOF\n', 'latin1');
+    const issueExecute = jest.fn().mockResolvedValue({
+      receipt: {
+        id: 'rec-evt-1',
+        receiptCode: 'REC-2026-EVT01',
+        tripId: 'trip-evt-1',
+        passengerId: 'usr-1',
+        passengerEmail: 'cliente@example.com',
+        amount: 2500,
+        currency: 'ARS',
+        issuedAt: new Date('2026-11-28T10:00:00Z'),
+      },
+      pdf: pdfBuffer,
+    });
+    const unifiedConsumer = new TripCompletedConsumer(
+      { send, markFailed } as unknown as NotificationsService,
+      { execute: issueExecute } as unknown as IssueReceiptUseCase,
+    );
+    await unifiedConsumer.onModuleInit();
+
+    const viajeFinalizadoMsg = makeMessage({
+      eventoId: 'evt-coord-viaje-1',
+      tipo: 'VIAJE_FINALIZADO',
+      origen: 'M6',
+      ocurridoEn: '2026-11-28T10:00:00Z',
+      viajeId: 'trip-evt-1',
+      destinatarios: [
+        {
+          usuarioId: 'usr-1',
+          rol: 'CLIENTE',
+          email: 'cliente@example.com',
+          canalesPreferidos: ['EMAIL'],
+        },
+      ],
+      detalle: {
+        origen: 'Centro',
+        destino: 'Aeropuerto',
+        importe: { monto: 2500, moneda: 'ARS' },
+      },
+    });
+    messageHandler(viajeFinalizadoMsg);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(issueExecute).toHaveBeenCalledWith({
+      tripId: 'trip-evt-1',
+      passengerId: 'usr-1',
+      passengerEmail: 'cliente@example.com',
+      amount: 2500,
+      currency: 'ARS',
+    });
+    expect(send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channel: 'EMAIL',
+        recipient: 'cliente@example.com',
+        attachments: [
+          expect.objectContaining({
+            filename: 'comprobante-REC-2026-EVT01.pdf',
+            content: pdfBuffer,
+            contentType: 'application/pdf',
+          }),
+        ],
+      }),
+      'evt-coord-viaje-1',
+      false,
+      true,
+    );
+    expect(ack).toHaveBeenCalledWith(viajeFinalizadoMsg);
+
+    issueExecute.mockClear();
+    send.mockClear();
+
+    const conductorMsg = makeMessage({
+      eventoId: 'evt-coord-pago-conductor',
+      tipo: 'PAGO_CAPTURADO',
+      origen: 'M7',
+      ocurridoEn: '2026-11-28T10:05:00Z',
+      pagoId: 'pay-99',
+      destinatarios: [
+        {
+          usuarioId: 'drv-1',
+          rol: 'CONDUCTOR',
+          email: 'conductor@example.com',
+        },
+      ],
+      detalle: { importe: { monto: 1200, moneda: 'ARS' } },
+    });
+    messageHandler(conductorMsg);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(issueExecute).not.toHaveBeenCalled();
+    expect(send).toHaveBeenCalledWith(
+      expect.not.objectContaining({ attachments: expect.anything() }),
+      'evt-coord-pago-conductor',
+      false,
+      true,
+    );
+    await unifiedConsumer.onModuleDestroy();
+  });
+
+  it('degrades gracefully when receipt is registered but PDF generation fails (pdfError)', async () => {
+    const issueExecute = jest.fn().mockResolvedValue({
+      receipt: {
+        id: 'rec-nopdf-1',
+        receiptCode: 'REC-2026-NOPDF',
+        tripId: 'trip-nopdf-1',
+        passengerId: 'usr-nopdf',
+        passengerEmail: 'nopdf@example.com',
+        amount: 1900,
+        currency: 'ARS',
+        issuedAt: new Date('2026-11-28T10:10:00Z'),
+      },
+      pdf: undefined,
+      pdfError: 'PDFKit buffer error',
+    });
+    const unifiedConsumer = new TripCompletedConsumer(
+      { send, markFailed } as unknown as NotificationsService,
+      { execute: issueExecute } as unknown as IssueReceiptUseCase,
+    );
+    await unifiedConsumer.onModuleInit();
+
+    const msg = makeMessage({
+      eventoId: 'evt-nopdf-1',
+      tipo: 'PAGO_CAPTURADO',
+      origen: 'M7',
+      ocurridoEn: '2026-11-28T10:10:00Z',
+      viajeId: 'trip-nopdf-1',
+      pagoId: 'pay-nopdf-1',
+      destinatarios: [
+        { usuarioId: 'usr-nopdf', rol: 'CLIENTE', email: 'nopdf@example.com' },
+      ],
+      detalle: { importe: { monto: 1900, moneda: 'ARS' } },
+    });
+    messageHandler(msg);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        recipient: 'nopdf@example.com',
+        content: expect.stringContaining('Comprobante emitido: REC-2026-NOPDF.'),
+      }),
+      'evt-nopdf-1',
+      false,
+      true,
+    );
+    expect(send.mock.calls[0][0].attachments).toBeUndefined();
+    expect(ack).toHaveBeenCalledWith(msg);
+    await unifiedConsumer.onModuleDestroy();
+  });
+
+  it('routes EventoEntrada VIAJE_FINALIZADO through exponential backoff (30s/60s/120s) and DLQ on persistent SMTP failure', async () => {
+    send.mockResolvedValue({
+      success: false,
+      id: 'notif-fail',
+      status: 'FAILED',
+      retryable: true,
+    });
+    const pdfBuffer = Buffer.from('%PDF-1.4\nretry\n%%EOF\n', 'latin1');
+    const issueExecute = jest.fn().mockResolvedValue({
+      receipt: { receiptCode: 'REC-2026-RETRY' },
+      pdf: pdfBuffer,
+    });
+    const unifiedConsumer = new TripCompletedConsumer(
+      { send, markFailed } as unknown as NotificationsService,
+      { execute: issueExecute } as unknown as IssueReceiptUseCase,
+    );
+    await unifiedConsumer.onModuleInit();
+
+    const payload = {
+      eventoId: 'evt-coord-retry-1',
+      tipo: 'VIAJE_FINALIZADO',
+      origen: 'M6',
+      ocurridoEn: '2026-11-28T10:15:00Z',
+      viajeId: 'trip-retry-1',
+      destinatarios: [
+        { usuarioId: 'usr-r', rol: 'CLIENTE', email: 'retry@example.com' },
+      ],
+      detalle: { importe: { monto: 3000, moneda: 'ARS' } },
+    };
+
+    for (const retryCount of [0, 1, 2, 3]) {
+      const base = makeMessage(payload);
+      const msg = {
+        ...base,
+        fields: { routingKey: 'trip.completed' },
+        properties: { headers: { 'x-notification-retry-count': retryCount } },
+      } as unknown as ConsumeMessage;
+      messageHandler(msg);
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+
+    expect(sendToQueue.mock.calls.map(([q]) => q)).toEqual([
+      'notifications.retry',
+      'notifications.retry.attempt-2',
+      'notifications.retry.attempt-3',
+    ]);
+    expect(publish).toHaveBeenCalledWith(
+      'notifications.dlx',
+      'notifications.failed',
+      expect.any(Buffer),
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          'x-notification-retry-count': 3,
+          'x-failure-reason': 'proveedor de notificaciones no disponible',
+        }),
+      }),
+    );
+    expect(markFailed).toHaveBeenCalledWith(
+      'evt-coord-retry-1',
+      'proveedor de notificaciones no disponible',
+    );
+    await unifiedConsumer.onModuleDestroy();
   });
 });

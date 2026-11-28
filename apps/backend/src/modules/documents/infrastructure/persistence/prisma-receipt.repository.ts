@@ -108,12 +108,20 @@ export class PrismaReceiptRepository implements ReceiptRepositoryPort {
   }
 
   async findByIdOrTripId(idOrTripId: string): Promise<ReceiptRecord | null> {
+    // Prioridad 1 (contrato oficial): coincidencia exacta por comprobanteId (UUID).
+    const byId = await this.prisma.documentReceipt.findFirst({
+      where: { id: idOrTripId },
+    });
+    if (byId) {
+      return this.toRecord(byId);
+    }
+
+    // Prioridad 2 (compatibilidad): código de comprobante o identificador de viaje.
     const row = await this.prisma.documentReceipt.findFirst({
       where: {
         OR: [
-          { id: idOrTripId },
-          { tripId: idOrTripId },
           { receiptCode: idOrTripId },
+          { tripId: idOrTripId },
         ],
       },
     });

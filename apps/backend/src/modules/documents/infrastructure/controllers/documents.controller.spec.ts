@@ -4,6 +4,7 @@ import {
   GoneException,
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { DocumentsController } from './documents.controller';
@@ -332,6 +333,73 @@ describe('DocumentsController (RF-8.3, RF-8.4, RF-8.5)', () => {
         'receipt-uuid-123',
       );
       expect(res.end).toHaveBeenCalled();
+    });
+
+    it('POST /comprobantes/:comprobanteId/reenvios envía siempre al email registrado del cliente y soporta Idempotency-Key', async () => {
+      documentsService.findReceiptByIdOrTripId = jest
+        .fn()
+        .mockResolvedValue(mockReceiptRecord);
+      (documentsService.resendReceipt as jest.Mock).mockResolvedValue({
+        success: true,
+        tripId: mockReceiptRecord.tripId,
+        receiptCode: mockReceiptRecord.receiptCode,
+        sentTo: mockReceiptRecord.passengerEmail,
+        timestamp: '2026-11-27T12:00:00.000Z',
+      });
+
+      const first = await controller.reenviarComprobanteUnificado(
+        'receipt-uuid-123',
+        { canal: 'EMAIL' },
+        'idem-reenvio-001',
+      );
+      const second = await controller.reenviarComprobanteUnificado(
+        'receipt-uuid-123',
+        { canal: 'EMAIL' },
+        'idem-reenvio-001',
+      );
+
+      expect(documentsService.findReceiptByIdOrTripId).toHaveBeenCalledWith(
+        'receipt-uuid-123',
+      );
+      expect(documentsService.resendReceipt).toHaveBeenCalledTimes(1);
+      expect(documentsService.resendReceipt).toHaveBeenCalledWith({
+        tripId: mockReceiptRecord.tripId,
+        email: mockReceiptRecord.passengerEmail,
+      });
+      expect(first).toMatchObject({
+        canal: 'EMAIL',
+        estado: 'ENVIADA',
+        comprobanteId: mockReceiptRecord.id,
+        codigoComprobante: mockReceiptRecord.receiptCode,
+        destinatario: mockReceiptRecord.passengerEmail,
+      });
+      expect(second).toEqual(first);
+    });
+
+    it('POST /comprobantes/:comprobanteId/reenvios rechaza canales distintos de EMAIL con 422 y otro propietario con 403', async () => {
+      documentsService.findReceiptByIdOrTripId = jest
+        .fn()
+        .mockResolvedValue(mockReceiptRecord);
+
+      await expect(
+        controller.reenviarComprobanteUnificado('receipt-uuid-123', {
+          canal: 'SMS',
+        }),
+      ).rejects.toThrow(UnprocessableEntityException);
+
+      const otherClientJwt = `Bearer eyJhbGciOiJIUzI1NiJ9.${Buffer.from(
+        JSON.stringify({ sub: 'otro-cliente', rol: 'CLIENTE' }),
+      ).toString('base64url')}.sig`;
+
+      await expect(
+        controller.reenviarComprobanteUnificado(
+          'receipt-uuid-123',
+          { canal: 'EMAIL' },
+          undefined,
+          otherClientJwt,
+        ),
+      ).rejects.toThrow(ForbiddenException);
+      expect(documentsService.resendReceipt).not.toHaveBeenCalled();
     });
   });
 });

@@ -227,13 +227,10 @@ export class DocumentsController {
       return cached;
     }
 
-    // Si el viaje ya tenía un QR vigente, el anterior pasa a REEMPLAZADO y deja de ser válido
+    // Si el viaje ya tenía un QR vigente, GenerateQrUseCase lo marca como REEMPLAZADO en Redis
     const previousToken = this.activeQrByTrip.get(viajeId);
     if (previousToken) {
       this.replacedQrTokens.add(previousToken);
-      if (this.redis) {
-        await this.redis.set(`qr:replaced:${previousToken}`, 'REEMPLAZADO', 3600).catch(() => undefined);
-      }
     }
 
     const result = await this.documentsService.generateQr({
@@ -300,27 +297,21 @@ export class DocumentsController {
       return cached;
     }
 
-    // Verificar si el QR fue reemplazado por uno más reciente (409)
-    let isReplaced = this.replacedQrTokens.has(dto.token);
-    if (!isReplaced && this.redis) {
-      const replacedFlag = await this.redis.get(`qr:replaced:${dto.token}`).catch(() => null);
-      if (replacedFlag) {
-        isReplaced = true;
-      }
-    }
-    if (isReplaced) {
-      throw new ConflictException({
-        type: '/errores/qr-reemplazado',
-        title: 'El QR fue reemplazado',
-        detail: 'El código QR fue reemplazado por uno más reciente para el mismo viaje y ya no es válido.',
-      });
-    }
-
     try {
       const result = await this.documentsService.verifyQr({
         token: dto.token,
         tripId,
       });
+
+      // Respaldo en caso de pruebas unitarias del controlador con DocumentsService mockeado
+      if (this.replacedQrTokens.has(dto.token)) {
+        throw new ConflictException({
+          type: '/errores/qr-reemplazado',
+          title: 'El QR fue reemplazado',
+          detail:
+            'El código QR fue reemplazado por uno más reciente para el mismo viaje y ya no es válido.',
+        });
+      }
 
       const response = {
         qrId: crypto.randomUUID(),

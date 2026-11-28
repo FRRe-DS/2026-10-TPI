@@ -16,6 +16,7 @@ import {
   ResendReceiptDto,
   ResendReceiptResponseDto,
 } from '../dto/documents.dto';
+import { maskEmail } from '../../../../common/privacy-masking.util';
 
 /**
  * Caso de uso: Reenviar comprobante de viaje por correo electrónico (RF-8.5)
@@ -69,8 +70,10 @@ export class ResendReceiptUseCase {
 
     const attachmentFilename = `comprobante-${receipt.receiptCode}.pdf`;
 
+    const maskedRecipient = maskEmail(dto.email);
+
     this.logger.log(
-      `Reenviando comprobante ${receipt.receiptCode} para viaje ${dto.tripId} a ${dto.email} con adjunto ${attachmentFilename}`,
+      `Reenviando comprobante ${receipt.receiptCode} para viaje ${dto.tripId} a ${maskedRecipient} con adjunto ${attachmentFilename}`,
     );
 
     // 4. Enviar PDF como adjunto oficial
@@ -96,7 +99,7 @@ export class ResendReceiptUseCase {
     // 6. No informar éxito si falla el envío de correo
     if (!sendResult.success) {
       this.logger.error(
-        `Fallo al enviar correo a ${dto.email} para comprobante ${receipt.receiptCode}`,
+        `Fallo al enviar correo a ${maskedRecipient} para comprobante ${receipt.receiptCode}`,
       );
       throw new BadGatewayException(
         `No se pudo enviar el correo electrónico con el comprobante adjunto a "${dto.email}". ` +

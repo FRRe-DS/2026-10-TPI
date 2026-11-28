@@ -12,6 +12,7 @@ import {
   HttpStatus,
 } from '@nestjs/common';
 import {
+  ApiBearerAuth,
   ApiTags,
   ApiOperation,
   ApiResponse,
@@ -29,11 +30,12 @@ import {
 import { RedisService } from '../../../../common/redis.service';
 import {
   checkIdempotency,
-  parseAndAuthorizeJwt,
   saveIdempotency,
 } from '../../../../common/contract-security.util';
+import { Roles } from '../../../../common/auth';
 
 @ApiTags('Notificaciones')
+@ApiBearerAuth()
 @Controller()
 export class NotificationsController {
   private readonly idempotencyStore = new Map<string, { hash: string; response: any }>();
@@ -46,6 +48,7 @@ export class NotificationsController {
   // ─── Rutas Originales G10 (Retrocompatibilidad Frontend y Tests) ────────────
 
   @Post('notifications/send')
+  @Roles('OPERADOR', 'SERVICIO')
   @ApiOperation({ summary: 'Enviar una notificación inmediata (RF-8.1, RF-8.2)' })
   @ApiBody({ type: SendNotificationDto })
   @ApiResponse({
@@ -65,6 +68,8 @@ export class NotificationsController {
     },
   })
   @ApiResponse({ status: 400, description: 'Datos de la notificación inválidos' })
+  @ApiResponse({ status: 401, description: 'No autenticado' })
+  @ApiResponse({ status: 403, description: 'Sin permiso' })
   @ApiResponse({
     status: 500,
     description: 'No se pudo registrar el intento de notificación',
@@ -74,9 +79,12 @@ export class NotificationsController {
   }
 
   @Get('notifications/logs')
+  @Roles('OPERADOR', 'SERVICIO')
   @ApiOperation({ summary: 'Consultar el historial y estado de notificaciones enviadas (RF-8.6)' })
   @ApiQuery({ name: 'recipient', required: false })
   @ApiQuery({ name: 'status', required: false, enum: ['PENDING', 'SENT', 'FAILED'] })
+  @ApiResponse({ status: 401, description: 'No autenticado' })
+  @ApiResponse({ status: 403, description: 'Sin permiso' })
   async getLogs(@Query('recipient') recipient?: string, @Query('status') status?: string) {
     return this.notificationsService.getLogs(recipient, status);
   }
@@ -84,6 +92,7 @@ export class NotificationsController {
   // ─── Rutas Canónicas del Contrato Coordinado Definitivo (G10 + G7) ──────────
 
   @Post('notificaciones')
+  @Roles('OPERADOR')
   @HttpCode(HttpStatus.ACCEPTED)
   @ApiOperation({
     summary: 'Enviar una notificación manual (RF-8.1, RF-8.2 - Contrato Coordinado)',
@@ -91,14 +100,14 @@ export class NotificationsController {
   @ApiBody({ type: EnviarNotificacionUnificadaDto })
   @ApiResponse({ status: 202, description: 'Notificación registrada. El envío es asíncrono.' })
   @ApiResponse({ status: 400, description: 'Solicitud inválida' })
+  @ApiResponse({ status: 401, description: 'No autenticado' })
+  @ApiResponse({ status: 403, description: 'Sin permiso (requiere rol OPERADOR)' })
   @ApiResponse({ status: 422, description: 'Conflicto de idempotencia' })
   async enviarNotificacion(
     @Body() dto: EnviarNotificacionUnificadaDto,
     @Headers('idempotency-key') idempotencyKey?: string,
     @Res({ passthrough: true }) res?: Response,
-    @Headers('authorization') authHeader?: string,
   ) {
-    parseAndAuthorizeJwt(authHeader, ['OPERADOR']);
     const bodyHash = crypto.createHash('sha256').update(JSON.stringify(dto ?? {})).digest('hex');
 
     const cached = await checkIdempotency(
@@ -134,6 +143,7 @@ export class NotificationsController {
   }
 
   @Get('notificaciones')
+  @Roles('OPERADOR', 'SERVICIO')
   @ApiOperation({
     summary: 'Listar notificaciones paginadas con filtros (RF-8.6 - Contrato Coordinado)',
   })
@@ -149,6 +159,8 @@ export class NotificationsController {
   @ApiQuery({ name: 'referenciaId', required: false })
   @ApiQuery({ name: 'page', required: false })
   @ApiQuery({ name: 'size', required: false })
+  @ApiResponse({ status: 401, description: 'No autenticado' })
+  @ApiResponse({ status: 403, description: 'Sin permiso (requiere OPERADOR o SERVICIO)' })
   async listarNotificaciones(
     @Query('destinatarioId') destinatarioId?: string,
     @Query('recipient') recipient?: string,
@@ -158,9 +170,7 @@ export class NotificationsController {
     @Query('size') size?: string,
     @Query('canal') canal?: string,
     @Query('referenciaId') referenciaId?: string,
-    @Headers('authorization') authHeader?: string,
   ) {
-    parseAndAuthorizeJwt(authHeader, ['OPERADOR', 'SERVICIO']);
     return this.notificationsService.listarPaginadas({
       recipient: destinatarioId ?? recipient,
       status: estado ?? status,
@@ -172,34 +182,34 @@ export class NotificationsController {
   }
 
   @Get('notificaciones/:notificacionId')
+  @Roles('OPERADOR', 'SERVICIO')
   @ApiOperation({
     summary: 'Consultar el estado de una notificación (RF-8.6 - Contrato Coordinado)',
   })
   @ApiParam({ name: 'notificacionId', description: 'UUID de la notificación' })
   @ApiResponse({ status: 200, description: 'Notificación' })
+  @ApiResponse({ status: 401, description: 'No autenticado' })
+  @ApiResponse({ status: 403, description: 'Sin permiso' })
   @ApiResponse({ status: 404, description: 'No encontrado' })
-  async obtenerNotificacion(
-    @Param('notificacionId') notificacionId: string,
-    @Headers('authorization') authHeader?: string,
-  ) {
-    parseAndAuthorizeJwt(authHeader, ['OPERADOR', 'SERVICIO']);
+  async obtenerNotificacion(@Param('notificacionId') notificacionId: string) {
     return this.notificationsService.findById(notificacionId);
   }
 
   @Get('notificaciones/:notificacionId/intentos')
+  @Roles('OPERADOR', 'SERVICIO')
   @ApiOperation({
     summary: 'Historial de intentos de entrega (RF-8.6 - Contrato Coordinado)',
   })
   @ApiParam({ name: 'notificacionId', description: 'UUID de la notificación' })
   @ApiQuery({ name: 'page', required: false })
   @ApiQuery({ name: 'size', required: false })
+  @ApiResponse({ status: 401, description: 'No autenticado' })
+  @ApiResponse({ status: 403, description: 'Sin permiso' })
   async listarIntentos(
     @Param('notificacionId') notificacionId: string,
     @Query('page') page?: string,
     @Query('size') size?: string,
-    @Headers('authorization') authHeader?: string,
   ) {
-    parseAndAuthorizeJwt(authHeader, ['OPERADOR', 'SERVICIO']);
     return this.notificationsService.getIntentos(
       notificacionId,
       page !== undefined ? Number(page) : 0,
@@ -208,20 +218,21 @@ export class NotificationsController {
   }
 
   @Post('notificaciones/:notificacionId/reintentos')
+  @Roles('OPERADOR')
   @HttpCode(HttpStatus.ACCEPTED)
   @ApiOperation({
     summary: 'Reintentar una notificación fallida (RF-8.6 - Contrato Coordinado)',
   })
   @ApiParam({ name: 'notificacionId', description: 'UUID de la notificación' })
   @ApiResponse({ status: 202, description: 'Reintento aceptado' })
+  @ApiResponse({ status: 401, description: 'No autenticado' })
+  @ApiResponse({ status: 403, description: 'Sin permiso (requiere rol OPERADOR)' })
   @ApiResponse({ status: 404, description: 'No encontrado' })
   @ApiResponse({ status: 409, description: 'Solo se puede reintentar una notificación en FALLIDA' })
   async reintentarNotificacion(
     @Param('notificacionId') notificacionId: string,
     @Headers('idempotency-key') idempotencyKey?: string,
-    @Headers('authorization') authHeader?: string,
   ) {
-    parseAndAuthorizeJwt(authHeader, ['OPERADOR']);
     const cached = await checkIdempotency(
       this.idempotencyStore,
       this.redis,

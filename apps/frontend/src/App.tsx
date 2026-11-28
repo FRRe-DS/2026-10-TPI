@@ -25,6 +25,7 @@ import {
 } from 'lucide-react';
 import { createSimulatorId, simulatorModules, trackSimulation } from './simulator';
 import type { SimulationResult, SimulatorModule, SimulatorPayload } from './simulator';
+import { authenticatedFetch, getBearerToken, openAuthenticatedPdf } from './auth';
 
 const API_BASE = (import.meta as any).env?.VITE_API_BASE_URL || 'http://localhost:3000/api/v1';
 
@@ -169,7 +170,7 @@ export default function App() {
         params.append('referenceId', ticketFilterRef.trim());
       }
       const query = params.toString() ? `?${params.toString()}` : '';
-      const res = await fetch(`${API_BASE}/support/tickets${query}`);
+      const res = await authenticatedFetch(API_BASE, `${API_BASE}/support/tickets${query}`, {}, 'OPERADOR');
       if (res.ok) {
         const data = await res.json();
         setTickets(Array.isArray(data) ? data : []);
@@ -193,7 +194,7 @@ export default function App() {
     e.preventDefault();
     setTicketActionMsg(null);
     try {
-      const res = await fetch(`${API_BASE}/support/tickets`, {
+      const res = await authenticatedFetch(API_BASE, `${API_BASE}/support/tickets`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(newTicket),
@@ -229,7 +230,7 @@ export default function App() {
     if (!nextStatus) return;
 
     try {
-      const res = await fetch(`${API_BASE}/support/tickets/${ticketId}/status`, {
+      const res = await authenticatedFetch(API_BASE, `${API_BASE}/support/tickets/${ticketId}/status`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -263,7 +264,7 @@ export default function App() {
         params.append('recipient', notifFilterRecipient.trim());
       }
       const query = params.toString() ? `?${params.toString()}` : '';
-      const res = await fetch(`${API_BASE}/notifications/logs${query}`);
+      const res = await authenticatedFetch(API_BASE, `${API_BASE}/notifications/logs${query}`, {}, 'OPERADOR');
       if (res.ok) {
         const data = await res.json();
         setNotifications(Array.isArray(data) ? data : []);
@@ -295,7 +296,7 @@ export default function App() {
         payload.referenceId = directNotif.referenceId.trim();
         payload.referenceType = directNotif.referenceType;
       }
-      const res = await fetch(`${API_BASE}/notifications/send`, {
+      const res = await authenticatedFetch(API_BASE, `${API_BASE}/notifications/send`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -325,7 +326,7 @@ export default function App() {
     e.preventDefault();
     setReceiptRegisterResult(null);
     try {
-      const res = await fetch(`${API_BASE}/documents/receipts`, {
+      const res = await authenticatedFetch(API_BASE, `${API_BASE}/documents/receipts`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -352,7 +353,7 @@ export default function App() {
 
   const handleDownloadPdf = (tripIdToDownload: string) => {
     const url = `${API_BASE}/documents/receipts/${encodeURIComponent(tripIdToDownload.trim())}/download`;
-    window.open(url, '_blank');
+    void openAuthenticatedPdf(API_BASE, url, `comprobante-${tripIdToDownload.trim()}.pdf`);
   };
 
   const handleResendReceipt = async (e: React.FormEvent) => {
@@ -360,7 +361,7 @@ export default function App() {
     setResendResult(null);
     setResendLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/documents/receipts/resend`, {
+      const res = await authenticatedFetch(API_BASE, `${API_BASE}/documents/receipts/resend`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -389,7 +390,7 @@ export default function App() {
   const handleGenerateQr = async () => {
     setVerifyResult(null);
     try {
-      const res = await fetch(`${API_BASE}/documents/qr/generate`, {
+      const res = await authenticatedFetch(API_BASE, `${API_BASE}/documents/qr/generate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -415,7 +416,7 @@ export default function App() {
     }
     setVerifyLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/documents/qr/verify`, {
+      const res = await authenticatedFetch(API_BASE, `${API_BASE}/documents/qr/verify`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ token: verifyToken.trim(), tripId: qrTripId.trim() }),
@@ -574,12 +575,12 @@ export default function App() {
     setSimulationLog(previous => [event, ...previous]);
     setSubmittingEvent(true);
     try {
-      const response = await fetch(`${API_BASE}/eventos`, {
+      const response = await authenticatedFetch(API_BASE, `${API_BASE}/eventos`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(eventPayload),
         signal: AbortSignal.timeout(60_000),
-      });
+      }, 'SERVICIO');
       const data = await response.json().catch(() => null);
       if (response.status !== 202) {
         update({
@@ -593,7 +594,7 @@ export default function App() {
         setDownloadTripId(event.receiptTripId);
         setResendTripId(event.receiptTripId);
       }
-      void trackSimulation(API_BASE, event, update);
+      void trackSimulation(API_BASE, event, update, () => getBearerToken(API_BASE, 'OPERADOR'));
     } catch {
       update({ error: 'No se recibió respuesta del backend.' });
     } finally {
@@ -2086,7 +2087,17 @@ function SimulationEffects({ event }: { event: SimulationResult }) {
     <>
       <div>
         Comprobante · {event.receipt ? (
-          <a href={`${API_BASE}/comprobantes/${encodeURIComponent(event.receipt.id)}/pdf`}>
+          <a
+            href={`${API_BASE}/comprobantes/${encodeURIComponent(event.receipt.id)}/pdf`}
+            onClick={(e) => {
+              e.preventDefault();
+              void openAuthenticatedPdf(
+                API_BASE,
+                `${API_BASE}/comprobantes/${encodeURIComponent(event.receipt!.id)}/pdf`,
+                `comprobante-${event.receipt!.code}.pdf`,
+              );
+            }}
+          >
             {event.receipt.code} (PDF)
           </a>
         ) : event.receiptTripId ? pending : 'no corresponde a este evento'}

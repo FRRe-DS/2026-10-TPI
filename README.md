@@ -229,3 +229,80 @@ Los siguientes requerimientos constituyen la línea base común. La cátedra def
 | M7         | Grupo 11  |
 | M8         | Grupo 10  |
 | M9         | Grupo 9   |
+
+---
+
+### Seguridad y Autenticación JWT / Keycloak (RNF-12)
+
+Todos los endpoints del Módulo 8 (excepto `GET /health` y `GET /api/v1/health`) están protegidos mediante los guards globales `JwtAuthGuard` (autenticación HTTP `401`) y `RolesGuard` (autorización RBAC HTTP `403`), devolviendo errores en formato RFC 9457 (`application/problem+json`).
+
+#### Validación criptográfica contra Keycloak (JWKS)
+
+El backend valida cada `Authorization: Bearer <JWT>` con `jsonwebtoken` y `jwks-rsa`:
+
+- Verifica la firma criptográfica asimétrica contra el endpoint JWKS confiable configurado en `AUTH_JWKS_URI` (nunca utiliza URLs `jku`/`x5u` embebidas en el token).
+- Restringe algoritmos permitidos (`AUTH_JWT_ALGORITHMS`, por defecto `RS256,RS384,RS512,ES256`; rechaza `alg: none` y algoritmos simétricos `HS*`).
+- Valida obligatoriamente `exp`, `nbf` (si está presente), `sub`, `iss` (`AUTH_JWT_ISSUER`) y `aud` (`AUTH_JWT_AUDIENCE`).
+- Extrae roles **únicamente después de verificar la firma**, reconociendo:
+  - `role`, `rol`, `roles`
+  - `realm_access.roles` (roles de realm en Keycloak)
+  - `resource_access[<clientId>].roles` para los `clientId` confiables listados en `AUTH_KEYCLOAK_CLIENT_IDS`
+- Nunca registra el token JWT completo ni secretos en los logs.
+
+#### Configuración de Keycloak (Consorcio 2 / M1)
+
+Definir en `.env` con los valores reales provistos por M1:
+
+```dotenv
+AUTH_JWKS_URI="https://<KEYCLOAK_HOST>/realms/<REALM>/protocol/openid-connect/certs"
+AUTH_JWT_ISSUER="https://<KEYCLOAK_HOST>/realms/<REALM>"
+AUTH_JWT_AUDIENCE="<AUDIENCE_CONSORCIO>"
+AUTH_JWT_ALGORITHMS="RS256,RS384,RS512,ES256"
+AUTH_KEYCLOAK_CLIENT_IDS="m8-notificaciones,grupo-12,grupo-9"
+AUTH_DEV_TOKEN_PROVIDER_ENABLED=false
+```
+
+#### Requisitos para tokens de grupos externos (`M6` Grupo 12, `M9` Grupo 9, `M5`, `M7`)
+
+Para consumir `POST /api/v1/qr/validaciones` o `POST /api/v1/eventos`:
+
+1. Obtener un token vía `client_credentials` en Keycloak (ej. cliente `grupo-12` o `grupo-9`).
+2. El JWT debe estar firmado con RS256/ES256 usando una clave publicada en el JWKS del realm (`kid` presente en header).
+3. Debe incluir `iss`, `aud` coincidentes con la configuración del consorcio, `sub` no vacío y `exp` vigente.
+4. Debe incluir el rol `SERVICIO` en `realm_access.roles`, en `resource_access[<clientId>].roles` (con `<clientId>` autorizado en `AUTH_KEYCLOAK_CLIENT_IDS`), o en el claim de nivel raíz `role`/`rol`/`roles`.
+
+#### Proveedor local de tokens RS256 para desarrollo
+
+Para desarrollo local y operación del dashboard/simulador RNF-15 sin Keycloak externo, el backend ofrece un proveedor efímero RSA-2048 que **solo se activa cuando `NODE_ENV !== 'production'` y `AUTH_DEV_TOKEN_PROVIDER_ENABLED=true`** (en producción permanece bloqueado de forma estricta y responde `404`):
+
+- `GET /api/v1/auth/dev/.well-known/jwks.json` — clave pública JWK efímera de la sesión local.
+- `POST /api/v1/auth/dev/token` — emite un JWT RS256 válido por tiempo acotado para pruebas locales.
+
+#### Ejemplos de peticiones autenticadas
+
+```bash
+# 1. En desarrollo local (si no usás Keycloak), obtener un token RS256 de servicio:
+TOKEN=$(curl -s -X POST http://localhost:3000/api/v1/auth/dev/token \
+  -H "Content-Type: application/json" \
+  -d '{"role":"SERVICIO","sub":"grupo-12"}' | node -e "const d=JSON.parse(require('fs').readFileSync(0,'utf8'));console.log(d.access_token)")
+
+# 2. Validar un QR (M6 -> M8, requiere rol SERVICIO):
+curl -X POST http://localhost:3000/api/v1/qr/validaciones \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: 550e8400-e29b-41d4-a716-446655440001" \
+  -d '{"token":"<QR_TOKEN>","viajeId":"550e8400-e29b-41d4-a716-446655440010"}'
+
+# 3. Informar un evento de reserva (M9 -> M8, requiere rol SERVICIO):
+curl -X POST http://localhost:3000/api/v1/eventos \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "eventoId":"550e8400-e29b-41d4-a716-446655440055",
+    "tipo":"RESERVA_CONFIRMADA",
+    "origen":"M9",
+    "ocurridoEn":"2026-11-28T15:00:00.000Z",
+    "reservaId":"550e8400-e29b-41d4-a716-446655440066",
+    "destinatarios":[{"usuarioId":"usr-1","rol":"CLIENTE","email":"pasajero@ejemplo.com","canalesPreferidos":["EMAIL"]}]
+  }'
+```

@@ -46,8 +46,12 @@ export function createSimulatorId() {
   return [hex.slice(0, 8), hex.slice(8, 12), hex.slice(12, 16), hex.slice(16, 20), hex.slice(20)].join('-');
 }
 
-async function readJson(url: string) {
-  const response = await fetch(url, { signal: AbortSignal.timeout(5000) });
+async function readJson(url: string, token?: string | null) {
+  const init: RequestInit = { signal: AbortSignal.timeout(5000) };
+  if (token) {
+    init.headers = { Authorization: `Bearer ${token}` };
+  }
+  const response = await fetch(url, init);
   return response.ok ? response.json() : null;
 }
 
@@ -55,6 +59,7 @@ export async function trackSimulation(
   apiBase: string,
   event: SimulationResult,
   update: (changes: Partial<SimulationResult>) => void,
+  getToken?: () => Promise<string | null>,
 ) {
   const logsUrl = `${apiBase}/notifications/logs?${new URLSearchParams({ recipient: event.recipient })}`;
   const receiptUrl = event.receiptTripId
@@ -64,9 +69,10 @@ export async function trackSimulation(
   let delivery: SimulationResult['delivery'];
 
   try {
+    const token = getToken ? await getToken() : null;
     for (let attempt = 0; attempt < 8; attempt++) {
       await Promise.all([
-        !delivery && readJson(logsUrl).then((logs: {
+        !delivery && readJson(logsUrl, token).then((logs: {
           eventId: string;
           status: 'SENT' | 'FAILED' | 'PENDING';
           lastError?: string;
@@ -77,7 +83,7 @@ export async function trackSimulation(
             update({ delivery });
           }
         }).catch(() => undefined),
-        receiptUrl && !receipt && readJson(receiptUrl).then((data: {
+        receiptUrl && !receipt && readJson(receiptUrl, token).then((data: {
           comprobanteId?: string;
           codigoComprobante?: string;
           viajeId?: string;

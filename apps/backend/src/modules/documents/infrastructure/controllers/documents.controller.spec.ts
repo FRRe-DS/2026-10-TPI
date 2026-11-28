@@ -387,16 +387,21 @@ describe('DocumentsController (RF-8.3, RF-8.4, RF-8.5)', () => {
         }),
       ).rejects.toThrow(UnprocessableEntityException);
 
-      const otherClientJwt = `Bearer eyJhbGciOiJIUzI1NiJ9.${Buffer.from(
-        JSON.stringify({ sub: 'otro-cliente', rol: 'CLIENTE' }),
-      ).toString('base64url')}.sig`;
+      const otherClientIdentity = {
+        authenticated: true as const,
+        sub: 'otro-cliente',
+        rol: 'CLIENTE',
+        roles: ['CLIENTE'],
+      };
+
+
 
       await expect(
         controller.reenviarComprobanteUnificado(
           'receipt-uuid-123',
           { canal: 'EMAIL' },
           undefined,
-          otherClientJwt,
+          otherClientIdentity,
         ),
       ).rejects.toThrow(ForbiddenException);
       expect(documentsService.resendReceipt).not.toHaveBeenCalled();

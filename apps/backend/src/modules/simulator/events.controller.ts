@@ -2,14 +2,14 @@ import {
   BadRequestException,
   Body,
   Controller,
-  Headers,
+
   HttpCode,
   HttpStatus,
   Logger,
   Optional,
   Post,
 } from '@nestjs/common';
-import { ApiBody, ApiOperation, ApiProperty, ApiResponse, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiBody, ApiOperation, ApiProperty, ApiResponse, ApiTags } from '@nestjs/swagger';
 import {
   IsArray,
   IsNotEmpty,
@@ -26,10 +26,11 @@ import {
 import { RedisService } from '../../common/redis.service';
 import {
   checkIdempotency,
-  parseAndAuthorizeJwt,
+
   saveIdempotency,
 } from '../../common/contract-security.util';
 import * as crypto from 'crypto';
+import { Roles } from '../../common/auth';
 
 export class DestinatarioEventoDto {
   @ApiProperty({ example: 'usr-uuid-3003' })
@@ -190,6 +191,7 @@ const EVENT_SUBJECTS: Record<string, string> = {
 };
 
 @ApiTags('Eventos')
+@ApiBearerAuth()
 @Controller(['eventos', 'events'])
 export class EventsController {
   private readonly logger = new Logger(EventsController.name);
@@ -204,6 +206,7 @@ export class EventsController {
   ) {}
 
   @Post()
+  @Roles('SERVICIO')
   @HttpCode(HttpStatus.ACCEPTED)
   @ApiOperation({
     summary: 'Informar un hito de viaje, reserva o pago (RF-8.1, RF-8.2, RF-8.8)',
@@ -213,12 +216,14 @@ export class EventsController {
   @ApiBody({ type: EventoEntradaDto })
   @ApiResponse({ status: 202, description: 'Evento recibido. Se procesa de forma asíncrona.' })
   @ApiResponse({ status: 400, description: 'Solicitud inválida (falta referencia o destinatarios)' })
+  @ApiResponse({ status: 401, description: 'No autenticado (token ausente, expirado o firma inválida)' })
+  @ApiResponse({ status: 403, description: 'Sin permiso (se requiere rol SERVICIO)' })
   @ApiResponse({ status: 422, description: 'Conflicto de idempotencia (mismo eventoId con cuerpo distinto)' })
   async recibirEvento(
     @Body() dto: EventoEntradaDto,
-    @Headers('authorization') authHeader?: string,
+
   ) {
-    parseAndAuthorizeJwt(authHeader, ['SERVICIO']);
+
     if (!dto.eventoId || !dto.tipo || !dto.origen || !dto.ocurridoEn) {
       throw new BadRequestException(
         'Los campos eventoId, tipo, origen y ocurridoEn son obligatorios.',

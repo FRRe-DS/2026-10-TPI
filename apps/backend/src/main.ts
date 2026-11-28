@@ -90,7 +90,12 @@ async function bootstrap() {
       'API de Notificaciones, Documentos y Soporte (M8). Contrato común acordado entre el Grupo 7 y el Grupo 10.',
     )
     .setVersion('1.0.0')
-    .addBearerAuth()
+    .addBearerAuth({
+      type: 'http',
+      scheme: 'bearer',
+      bearerFormat: 'JWT',
+      description: 'JWT firmado emitido por M1/Keycloak (verificado contra JWKS) o proveedor local en desarrollo.',
+    })
     .addTag('Salud')
     .addTag('Eventos')
     .addTag('Notificaciones')

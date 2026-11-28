@@ -15,11 +15,14 @@ function makeJwt(payload: Record<string, unknown>): string {
 describe('Códigos QR de viaje — API + Prisma + PostgreSQL temporal', () => {
   let ctx: IntegrationApp;
 
-  const serviceJwt = makeJwt({ sub: 'm6-viajes', rol: 'SERVICIO' });
-  const clientJwt = (sub: string) => makeJwt({ sub, rol: 'CLIENTE' });
+  let serviceJwt: string;
+  let clientJwt: (sub: string) => string;
+
 
   beforeAll(async () => {
     ctx = await createIntegrationApp();
+    serviceJwt = ctx.issueBearerToken({ sub: 'm6-viajes', role: 'SERVICIO' });
+    clientJwt = (sub: string) => ctx.issueBearerToken({ sub, role: 'CLIENTE' });
   }, 120_000);
 
   beforeEach(async () => {

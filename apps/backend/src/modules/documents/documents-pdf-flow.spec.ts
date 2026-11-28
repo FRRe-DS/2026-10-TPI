@@ -8,6 +8,7 @@ import { AppModule } from '../../app.module';
 import { PrismaService } from '../../common/prisma.service';
 import { ProblemDetailsFilter } from '../../common/problem-details.filter';
 import { RedisService } from '../../common/redis.service';
+import { DevTokenProviderService } from '../../common/auth';
 import {
   NotificationLogRecord,
   NotificationLogRepositoryPort,
@@ -294,9 +295,11 @@ describe('Flujo HTTP completo RF-8.4 y RF-8.5 (PDFKit + Nodemailer sobre ESMTP l
   let receiptRepo: InMemoryReceiptRepository;
   let savedSmtpEnv: Record<string, string | undefined>;
 
-  const serviceToken = makeJwt({ sub: 'm6-viajes', rol: 'SERVICIO' });
-  const clientToken = makeJwt({ sub: '33333333-3333-4333-8333-333333333333', rol: 'CLIENTE' });
-  const otherClientToken = makeJwt({ sub: '99999999-9999-4999-8999-999999999999', rol: 'CLIENTE' });
+  let serviceToken: string;
+  let clientToken: string;
+  let otherClientToken: string;
+
+
 
   beforeAll(async () => {
     smtp = await startLocalSmtpSink();
@@ -306,12 +309,18 @@ describe('Flujo HTTP completo RF-8.4 y RF-8.5 (PDFKit + Nodemailer sobre ESMTP l
       SMTP_SECURE: process.env.SMTP_SECURE,
       SMTP_USER: process.env.SMTP_USER,
       SMTP_PASS: process.env.SMTP_PASS,
+      NODE_ENV: process.env.NODE_ENV,
+      AUTH_DEV_TOKEN_PROVIDER_ENABLED: process.env.AUTH_DEV_TOKEN_PROVIDER_ENABLED,
+      AUTH_JWKS_URI: process.env.AUTH_JWKS_URI,
     };
     process.env.SMTP_HOST = '127.0.0.1';
     process.env.SMTP_PORT = String(smtp.port);
     process.env.SMTP_SECURE = 'false';
     delete process.env.SMTP_USER;
     delete process.env.SMTP_PASS;
+    process.env.NODE_ENV = 'test';
+    process.env.AUTH_DEV_TOKEN_PROVIDER_ENABLED = 'true';
+    delete process.env.AUTH_JWKS_URI;
 
     receiptRepo = new InMemoryReceiptRepository();
 
@@ -341,6 +350,10 @@ describe('Flujo HTTP completo RF-8.4 y RF-8.5 (PDFKit + Nodemailer sobre ESMTP l
     );
     app.useGlobalFilters(new ProblemDetailsFilter());
     await app.init();
+    const devTokens = app.get(DevTokenProviderService);
+    serviceToken = `Bearer ${devTokens.issueToken({ sub: 'm6-viajes', role: 'SERVICIO' }).access_token}`;
+    clientToken = `Bearer ${devTokens.issueToken({ sub: '33333333-3333-4333-8333-333333333333', role: 'CLIENTE' }).access_token}`;
+    otherClientToken = `Bearer ${devTokens.issueToken({ sub: '99999999-9999-4999-8999-999999999999', role: 'CLIENTE' }).access_token}`;
   });
 
   beforeEach(() => {

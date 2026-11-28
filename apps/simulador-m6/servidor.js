@@ -5,6 +5,28 @@ const PUERTO = process.env.PUERTO || 3001;
 // Apunta al servicio "backend" usando el DNS interno de la red de Docker
 const URL_BACKEND_M8 = process.env.URL_BACKEND_M8 || 'http://backend:3000/api/v1';
 
+async function obtenerCabeceraAuthServicio() {
+  if (process.env.M8_SERVICE_TOKEN && process.env.M8_SERVICE_TOKEN.trim()) {
+    return { Authorization: `Bearer ${process.env.M8_SERVICE_TOKEN.trim()}` };
+  }
+  try {
+    const res = await fetch(`${URL_BACKEND_M8}/auth/dev/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role: 'SERVICIO', sub: 'm6-simulador' }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data && data.access_token) {
+        return { Authorization: `Bearer ${data.access_token}` };
+      }
+    }
+  } catch {
+    // Si el proveedor local no está habilitado, se envía sin cabecera y M8 responderá 401
+  }
+  return {};
+}
+
 const servidor = http.createServer(async (req, res) => {
   // 1. Endpoint de salud (Healthcheck) para Docker Compose
   if (req.method === 'GET' && req.url === '/salud') {
@@ -75,7 +97,7 @@ const servidor = http.createServer(async (req, res) => {
         // Llamada HTTP contenedor-a-contenedor hacia M8 (backend)
         const respuesta = await fetch(`${URL_BACKEND_M8}/simulator/trip-completed`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...(await obtenerCabeceraAuthServicio()) },
           body: JSON.stringify(datos),
         });
 
@@ -140,6 +162,7 @@ const servidor = http.createServer(async (req, res) => {
           headers: {
             'Content-Type': 'application/json',
             'X-Request-Id': requestId,
+            ...(await obtenerCabeceraAuthServicio()),
           },
           body: JSON.stringify(eventoPayload),
         });

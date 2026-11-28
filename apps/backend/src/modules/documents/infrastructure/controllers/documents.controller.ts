@@ -17,6 +17,7 @@ import {
   HttpStatus,
 } from '@nestjs/common';
 import {
+  ApiBearerAuth,
   ApiTags,
   ApiOperation,
   ApiResponse,
@@ -44,13 +45,15 @@ import { RedisService } from '../../../../common/redis.service';
 import {
   assertResourceOwnership,
   checkIdempotency,
-  parseAndAuthorizeJwt,
+  hasIdentityRole,
   saveIdempotency,
 } from '../../../../common/contract-security.util';
 import { Response } from 'express';
 import * as crypto from 'crypto';
+import { AuthenticatedIdentity, CurrentUser, Roles } from '../../../../common/auth';
 
 @ApiTags('Documentos y QR')
+@ApiBearerAuth()
 @Controller()
 export class DocumentsController {
   private readonly idempotencyStore = new Map<string, { hash: string; response: any }>();
@@ -67,6 +70,7 @@ export class DocumentsController {
   // ─── QR (Rutas Originales G10) ─────────────────────────────────────────────
 
   @Post('documents/qr/generate')
+  @Roles('CLIENTE', 'SERVICIO', 'OPERADOR')
   @ApiOperation({ summary: 'Generar código QR temporal de un solo uso para inicio de viaje (RF-8.3)' })
   @ApiResponse({ status: 201, description: 'QR generado exitosamente con DataURL y token' })
   @ApiResponse({ status: 400, description: 'Datos de entrada inválidos' })
@@ -75,6 +79,7 @@ export class DocumentsController {
   }
 
   @Post('documents/qr/verify')
+  @Roles('SERVICIO', 'OPERADOR')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Validar y consumir el código QR (RF-8.3 / RF-6.4)' })
   @ApiResponse({ status: 200, description: 'Código QR verificado y consumido exitosamente' })
@@ -93,6 +98,7 @@ export class DocumentsController {
    * un comprobante registrado, devuelve el existente sin crear duplicados.
    */
   @Post('documents/receipts')
+  @Roles('SERVICIO', 'OPERADOR')
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({
     summary: 'Registrar comprobante de viaje (RF-8.4)',
@@ -137,6 +143,7 @@ export class DocumentsController {
    * Devuelve 404 si no existe comprobante para ese tripId o comprobanteId.
    */
   @Get('documents/receipts/:tripId/download')
+  @Roles('CLIENTE', 'OPERADOR', 'SERVICIO')
   @ApiOperation({
     summary: 'Descargar comprobante de viaje en PDF (RF-8.4)',
     description:
@@ -166,6 +173,7 @@ export class DocumentsController {
   // ─── Reenvío (RF-8.5 - Ruta Original G10) ──────────────────────────────────
 
   @Post('documents/receipts/resend')
+  @Roles('CLIENTE', 'OPERADOR')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Reenviar comprobante de viaje por email con PDF adjunto (RF-8.5)',
@@ -189,6 +197,7 @@ export class DocumentsController {
   // ─── Rutas Canónicas del Contrato Coordinado Definitivo (G10 + G7) ──────────
 
   @Post('viajes/:viajeId/qr')
+  @Roles('CLIENTE', 'SERVICIO')
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({
     summary: 'Generar el QR de verificación de un viaje (RF-8.3 - Contrato Coordinado)',
@@ -199,9 +208,9 @@ export class DocumentsController {
     @Param('viajeId') viajeId: string,
     @Body() dto: GenerarQrViajeDto,
     @Headers('idempotency-key') idempotencyKey?: string,
-    @Headers('authorization') authHeader?: string,
+    @CurrentUser() jwtIdentity?: AuthenticatedIdentity,
   ) {
-    const jwtIdentity = parseAndAuthorizeJwt(authHeader, ['CLIENTE', 'SERVICIO']);
+
     const passengerId = dto.clienteId ?? dto.passengerId;
     if (!passengerId || !passengerId.trim()) {
       throw new BadRequestException('El campo clienteId (o passengerId) es obligatorio.');
@@ -265,20 +274,23 @@ export class DocumentsController {
   }
 
   @Post('qr/validaciones')
+  @Roles('SERVICIO')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
     summary: 'Validar y consumir un QR (RF-8.3 / RF-6.4 - Contrato Coordinado)',
   })
   @ApiResponse({ status: 200, description: 'QR válido y consumido' })
+  @ApiResponse({ status: 401, description: 'No autenticado (token ausente, expirado o firma inválida)' })
+  @ApiResponse({ status: 403, description: 'Sin permiso (se requiere rol SERVICIO)' })
   @ApiResponse({ status: 404, description: 'El token no existe' })
   @ApiResponse({ status: 409, description: 'El QR ya fue usado o fue reemplazado' })
   @ApiResponse({ status: 422, description: 'El QR expiró o no corresponde al viajeId indicado' })
   async validarQrUnificado(
     @Body() dto: ValidarQrUnificadoDto,
     @Headers('idempotency-key') idempotencyKey?: string,
-    @Headers('authorization') authHeader?: string,
+    @CurrentUser() jwtIdentity?: AuthenticatedIdentity,
   ) {
-    parseAndAuthorizeJwt(authHeader, ['SERVICIO']);
+
     const tripId = dto.viajeId ?? dto.tripId ?? '';
     if (!dto.token?.trim() || !tripId.trim()) {
       throw new BadRequestException('Los campos token y viajeId son obligatorios.');
@@ -366,6 +378,7 @@ export class DocumentsController {
   }
 
   @Get('comprobantes')
+  @Roles('CLIENTE', 'OPERADOR')
   @ApiOperation({
     summary: 'Listar comprobantes (RF-8.4 - Contrato Coordinado)',
   })
@@ -380,11 +393,11 @@ export class DocumentsController {
     @Query('clienteId') clienteId?: string,
     @Query('page') page?: string,
     @Query('size') size?: string,
-    @Headers('authorization') authHeader?: string,
+    @CurrentUser() jwtIdentity?: AuthenticatedIdentity,
   ) {
-    const jwtIdentity = parseAndAuthorizeJwt(authHeader, ['CLIENTE', 'OPERADOR']);
+
     const effectiveClienteId =
-      jwtIdentity.authenticated && jwtIdentity.rol === 'CLIENTE' && jwtIdentity.sub
+      jwtIdentity?.authenticated && !hasIdentityRole(jwtIdentity, 'OPERADOR') && hasIdentityRole(jwtIdentity, 'CLIENTE') && jwtIdentity.sub
         ? jwtIdentity.sub
         : clienteId;
 
@@ -411,6 +424,7 @@ export class DocumentsController {
   }
 
   @Post('comprobantes')
+  @Roles('SERVICIO', 'OPERADOR')
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({
     summary: 'Registrar metadatos de comprobante síncronamente (RF-8.4)',
@@ -446,6 +460,7 @@ export class DocumentsController {
   }
 
   @Get('comprobantes/:comprobanteId')
+  @Roles('CLIENTE', 'OPERADOR')
   @ApiOperation({
     summary: 'Consultar un comprobante (RF-8.4 - Contrato Coordinado)',
   })
@@ -457,9 +472,9 @@ export class DocumentsController {
   @ApiResponse({ status: 404, description: 'No encontrado' })
   async obtenerComprobante(
     @Param('comprobanteId') comprobanteId: string,
-    @Headers('authorization') authHeader?: string,
+    @CurrentUser() jwtIdentity?: AuthenticatedIdentity,
   ) {
-    const jwtIdentity = parseAndAuthorizeJwt(authHeader, ['CLIENTE', 'OPERADOR']);
+
     const found = await this.resolveReceipt(comprobanteId);
     if (!found) {
       throw new NotFoundException(`Comprobante "${comprobanteId}" no encontrado.`);
@@ -469,6 +484,7 @@ export class DocumentsController {
   }
 
   @Get('comprobantes/:comprobanteId/pdf')
+  @Roles('CLIENTE', 'OPERADOR')
   @ApiOperation({
     summary: 'Descargar el PDF del comprobante (RF-8.4 - Contrato Coordinado)',
   })
@@ -481,9 +497,9 @@ export class DocumentsController {
   async descargarComprobantePdf(
     @Param('comprobanteId') comprobanteId: string,
     @Res() res: Response,
-    @Headers('authorization') authHeader?: string,
+    @CurrentUser() jwtIdentity?: AuthenticatedIdentity,
   ) {
-    const jwtIdentity = parseAndAuthorizeJwt(authHeader, ['CLIENTE', 'OPERADOR']);
+
     const found = await this.resolveReceipt(comprobanteId);
     if (!found) {
       throw new NotFoundException(`Comprobante "${comprobanteId}" no encontrado.`);
@@ -493,6 +509,7 @@ export class DocumentsController {
   }
 
   @Post('comprobantes/:comprobanteId/reenvios')
+  @Roles('CLIENTE', 'OPERADOR')
   @HttpCode(HttpStatus.ACCEPTED)
   @ApiOperation({
     summary: 'Volver a enviar el comprobante (RF-8.5 - Contrato Coordinado)',
@@ -513,9 +530,9 @@ export class DocumentsController {
     @Param('comprobanteId') comprobanteId: string,
     @Body() dto: ReenviarComprobanteUnificadoDto,
     @Headers('idempotency-key') idempotencyKey?: string,
-    @Headers('authorization') authHeader?: string,
+    @CurrentUser() jwtIdentity?: AuthenticatedIdentity,
   ) {
-    const jwtIdentity = parseAndAuthorizeJwt(authHeader, ['CLIENTE', 'OPERADOR']);
+
 
     const found = await this.resolveReceipt(comprobanteId);
     if (!found) {

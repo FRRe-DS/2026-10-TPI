@@ -14,6 +14,7 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 import {
+  ApiBearerAuth,
   ApiTags,
   ApiOperation,
   ApiResponse,
@@ -39,9 +40,10 @@ import { RedisService } from '../../../../common/redis.service';
 import {
   assertResourceOwnership,
   checkIdempotency,
-  parseAndAuthorizeJwt,
+  hasIdentityRole,
   saveIdempotency,
 } from '../../../../common/contract-security.util';
+import { AuthenticatedIdentity, CurrentUser, Roles } from '../../../../common/auth';
 
 const STATUS_FROM_SPANISH: Record<string, TicketStatusDto> = {
   ABIERTO: TicketStatusDto.OPEN,
@@ -88,6 +90,7 @@ const PRIORITY_TO_SPANISH: Record<string, string> = {
 };
 
 @ApiTags('Soporte y Tickets')
+@ApiBearerAuth()
 @Controller()
 export class SupportController {
   private readonly idempotencyStore = new Map<string, { hash: string; response: any }>();
@@ -101,6 +104,7 @@ export class SupportController {
   // ─── Rutas Originales G10 (Retrocompatibilidad Frontend y Tests) ────────────
 
   @Post('support/tickets')
+  @Roles('CLIENTE', 'CONDUCTOR', 'OPERADOR')
   @ApiOperation({ summary: 'Crear ticket de reclamo o consulta asociado a viaje, reserva o pago (RF-8.7)' })
   @ApiResponse({ status: 201, description: 'Ticket creado exitosamente' })
   async createTicket(@Body() dto: CreateTicketDto) {
@@ -108,6 +112,7 @@ export class SupportController {
   }
 
   @Get('support/tickets')
+  @Roles('CLIENTE', 'CONDUCTOR', 'OPERADOR')
   @ApiOperation({ summary: 'Listar tickets de soporte con filtros opcionales (RF-8.7)' })
   @ApiQuery({ name: 'referenceId', required: false })
   @ApiQuery({ name: 'status', required: false, enum: ['OPEN', 'IN_PROGRESS', 'RESOLVED', 'CLOSED'] })
@@ -116,6 +121,7 @@ export class SupportController {
   }
 
   @Get('support/tickets/:ticketId')
+  @Roles('CLIENTE', 'CONDUCTOR', 'OPERADOR')
   @ApiOperation({ summary: 'Obtener detalle de un ticket de soporte por UUID o ticketNumber (RF-8.7)' })
   @ApiResponse({ status: 200, description: 'Ticket encontrado' })
   @ApiResponse({ status: 404, description: 'Ticket no encontrado' })
@@ -124,6 +130,7 @@ export class SupportController {
   }
 
   @Patch('support/tickets/:ticketId/status')
+  @Roles('OPERADOR')
   @ApiOperation({ summary: 'Actualizar el estado de resolución de un ticket (RF-8.7)' })
   @ApiResponse({ status: 200, description: 'Estado actualizado' })
   @ApiResponse({ status: 400, description: 'Transición de estado inválida o ticket CLOSED' })
@@ -135,6 +142,7 @@ export class SupportController {
   // ─── Rutas Canónicas del Contrato Coordinado Definitivo (G10 + G7) ──────────
 
   @Post('tickets')
+  @Roles('CLIENTE', 'CONDUCTOR')
   @ApiOperation({
     summary: 'Crear un ticket de soporte (RF-8.7 - Contrato Coordinado)',
   })
@@ -145,14 +153,14 @@ export class SupportController {
   @ApiResponse({ status: 422, description: 'Conflicto de idempotencia' })
   async crearTicketUnificado(
     @Body() dto: CrearTicketUnificadoDto,
-    @Headers('authorization') authHeader?: string,
+    @CurrentUser() jwtIdentity?: AuthenticatedIdentity,
     @Headers('idempotency-key') idempotencyKey?: string,
     @Res({ passthrough: true }) res?: Response,
   ) {
-    const jwtIdentity = parseAndAuthorizeJwt(authHeader, ['CLIENTE', 'CONDUCTOR']);
+
     const createdBy =
-      jwtIdentity.sub ?? dto.usuarioId ?? dto.createdBy ?? 'usr-anonimo';
-    const rol = jwtIdentity.rol ?? 'CLIENTE';
+      jwtIdentity?.sub ?? dto.usuarioId ?? dto.createdBy ?? 'usr-anonimo';
+    const rol = jwtIdentity?.rol ?? 'CLIENTE';
 
     const referenceId = dto.referencia?.id ?? dto.referenceId ?? '';
     const rawRefType = dto.referencia?.tipo ?? dto.referenceType ?? 'VIAJE';
@@ -203,6 +211,7 @@ export class SupportController {
   }
 
   @Get('tickets')
+  @Roles('CLIENTE', 'CONDUCTOR', 'OPERADOR')
   @ApiOperation({
     summary: 'Listar tickets de soporte paginados (RF-8.7 - Contrato Coordinado)',
   })
@@ -227,9 +236,9 @@ export class SupportController {
     @Query('size') size?: string,
     @Query('referenciaTipo') referenciaTipo?: string,
     @Query('usuarioId') usuarioId?: string,
-    @Headers('authorization') authHeader?: string,
+    @CurrentUser() jwtIdentity?: AuthenticatedIdentity,
   ) {
-    const jwtIdentity = parseAndAuthorizeJwt(authHeader, ['CLIENTE', 'CONDUCTOR', 'OPERADOR']);
+
     const pageNum = Math.max(0, Number(page ?? 0) || 0);
     const sizeNum = Math.min(100, Math.max(1, Number(size ?? 20) || 20));
     const rawStatus = estado ?? status;
@@ -251,9 +260,9 @@ export class SupportController {
 
     // Si es CLIENTE o CONDUCTOR autenticado, solo ve los suyos; si es OPERADOR, puede filtrar por usuarioId
     const effectiveUserFilter =
-      jwtIdentity.authenticated &&
-      jwtIdentity.rol &&
-      ['CLIENTE', 'CONDUCTOR'].includes(jwtIdentity.rol) &&
+      jwtIdentity?.authenticated &&
+      !hasIdentityRole(jwtIdentity, 'OPERADOR') &&
+      (hasIdentityRole(jwtIdentity, 'CLIENTE') || hasIdentityRole(jwtIdentity, 'CONDUCTOR')) &&
       jwtIdentity.sub
         ? jwtIdentity.sub
         : usuarioId;
@@ -278,6 +287,7 @@ export class SupportController {
   }
 
   @Get('tickets/:ticketId')
+  @Roles('CLIENTE', 'CONDUCTOR', 'OPERADOR')
   @ApiOperation({
     summary: 'Consultar un ticket (RF-8.7 - Contrato Coordinado)',
   })
@@ -286,15 +296,16 @@ export class SupportController {
   @ApiResponse({ status: 404, description: 'No encontrado' })
   async obtenerTicketUnificado(
     @Param('ticketId') ticketId: string,
-    @Headers('authorization') authHeader?: string,
+    @CurrentUser() jwtIdentity?: AuthenticatedIdentity,
   ) {
-    const jwtIdentity = parseAndAuthorizeJwt(authHeader, ['CLIENTE', 'CONDUCTOR', 'OPERADOR']);
+
     const record = await this.supportService.findOne(ticketId);
     assertResourceOwnership(jwtIdentity, record.createdBy, ['CLIENTE', 'CONDUCTOR']);
     return this.toUnifiedTicket(record);
   }
 
   @Patch(['tickets/:ticketId', 'tickets/:ticketId/status'])
+  @Roles('OPERADOR')
   @ApiOperation({
     summary: 'Cambiar el estado de un ticket (RF-8.7 - Contrato Coordinado)',
   })
@@ -306,9 +317,9 @@ export class SupportController {
   async cambiarEstadoTicketUnificado(
     @Param('ticketId') ticketId: string,
     @Body() dto: CambiarEstadoTicketUnificadoDto,
-    @Headers('authorization') authHeader?: string,
+    @CurrentUser() jwtIdentity?: AuthenticatedIdentity,
   ) {
-    const jwtIdentity = parseAndAuthorizeJwt(authHeader, ['OPERADOR']);
+
     const rawState = dto.estado ?? dto.status;
     if (!rawState) {
       throw new BadRequestException('El campo estado (o status) es obligatorio.');
@@ -372,7 +383,7 @@ export class SupportController {
     const historyEntry: SupportTicketHistoryEntry = {
       estadoAnterior: previousStatusEsp,
       estadoNuevo: newStatusEsp,
-      actorId: jwtIdentity.sub ?? updated.assignedTo ?? 'operador-m8',
+      actorId: jwtIdentity?.sub ?? updated.assignedTo ?? 'operador-m8',
       ...(motivo ? { motivo } : {}),
       cambiadoEn: (updated.updatedAt ?? new Date()).toISOString(),
     };
@@ -388,6 +399,7 @@ export class SupportController {
   }
 
   @Get('tickets/:ticketId/historial')
+  @Roles('CLIENTE', 'CONDUCTOR', 'OPERADOR')
   @ApiOperation({
     summary: 'Historial de estados de un ticket (RF-8.7 - Contrato Coordinado)',
   })
@@ -402,9 +414,9 @@ export class SupportController {
     @Param('ticketId') ticketId: string,
     @Query('page') page?: string,
     @Query('size') size?: string,
-    @Headers('authorization') authHeader?: string,
+    @CurrentUser() jwtIdentity?: AuthenticatedIdentity,
   ) {
-    const jwtIdentity = parseAndAuthorizeJwt(authHeader, ['CLIENTE', 'CONDUCTOR', 'OPERADOR']);
+
     const pageNum = Math.max(0, Number(page ?? 0) || 0);
     const sizeNum = Math.min(100, Math.max(1, Number(size ?? 20) || 20));
     const record = await this.supportService.findOne(ticketId);

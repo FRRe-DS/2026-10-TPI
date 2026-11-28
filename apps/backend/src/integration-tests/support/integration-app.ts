@@ -10,6 +10,7 @@ import type { Response } from 'superagent';
 import { AppModule } from '../../app.module';
 import { PrismaService } from '../../common/prisma.service';
 import { RedisService } from '../../common/redis.service';
+import { DevTokenProviderService, DevTokenRequest } from '../../common/auth';
 import {
   ProblemDetailsFilter,
   resolveRequestId,
@@ -39,6 +40,8 @@ export interface IntegrationApp {
   mailer: RecordingNotificationSender;
   /** Cliente HTTP (supertest) contra la aplicación NestJS de prueba. */
   http(): ReturnType<typeof request>;
+  /** Emite un JWT RS256 real firmado con la clave efímera de pruebas del proveedor local. */
+  issueBearerToken(req?: DevTokenRequest): string;
   close(): Promise<void>;
 }
 
@@ -68,6 +71,9 @@ export async function createIntegrationApp(): Promise<IntegrationApp> {
   // Cualquier cliente Prisma accidental usará la base temporal, nunca una base compartida.
   process.env.DATABASE_URL = url;
   process.env.DIRECT_URL = url;
+  process.env.NODE_ENV = 'test';
+  process.env.AUTH_DEV_TOKEN_PROVIDER_ENABLED = 'true';
+  delete process.env.AUTH_JWKS_URI;
 
   const prisma = new PrismaService({ datasourceUrl: url });
   const mailer = new RecordingNotificationSender();
@@ -134,12 +140,15 @@ export async function createIntegrationApp(): Promise<IntegrationApp> {
     await database.verifyIdentity(); // falla rápido si no es la base temporal
 
     const running = app;
+    const devTokenProvider = running.get(DevTokenProviderService);
     return {
       app: running,
       prisma,
       database,
       mailer,
       http: () => request(running.getHttpServer()),
+      issueBearerToken: (req?: DevTokenRequest) =>
+        `Bearer ${devTokenProvider.issueToken(req).access_token}`,
       close: async () => {
         try {
           await running.close();

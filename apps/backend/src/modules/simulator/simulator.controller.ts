@@ -1,11 +1,14 @@
 import { Controller, Post, Body, Logger } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
+import { Roles } from '../../common/auth';
 import { NotificationsService } from '../notifications/application/notifications.service';
 import { DocumentsService } from '../documents/application/documents.service';
 import { IssueReceiptUseCase } from '../documents/application/use-cases/issue-receipt.use-case';
 import { NotificationChannelDto } from '../notifications/application/dto/send-notification.dto';
 
 @ApiTags('Simulador de Eventos')
+@ApiBearerAuth()
+@Roles('OPERADOR', 'SERVICIO')
 @Controller('simulator')
 export class SimulatorController {
   private readonly logger = new Logger(SimulatorController.name);

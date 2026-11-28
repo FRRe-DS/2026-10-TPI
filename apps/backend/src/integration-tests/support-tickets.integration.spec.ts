@@ -11,6 +11,16 @@ import { createIntegrationApp, IntegrationApp } from './support/integration-app'
  */
 describe('Tickets de soporte — API + Prisma + PostgreSQL temporal (CRUD sobre endpoints existentes)', () => {
   let ctx: IntegrationApp;
+  let operatorJwt: string;
+
+  const authed = () => {
+    const agent = ctx.http();
+    return {
+      get: (url: string) => agent.get(url).set('Authorization', operatorJwt),
+      post: (url: string) => agent.post(url).set('Authorization', operatorJwt),
+      patch: (url: string) => agent.patch(url).set('Authorization', operatorJwt),
+    };
+  };
 
   const TICKETS = '/api/v1/support/tickets';
   const validTicket = (referenceId = 'trip-it-ticket') => ({
@@ -23,6 +33,7 @@ describe('Tickets de soporte — API + Prisma + PostgreSQL temporal (CRUD sobre 
 
   beforeAll(async () => {
     ctx = await createIntegrationApp();
+    operatorJwt = ctx.issueBearerToken({ sub: 'operador-it-1', role: 'OPERADOR' });
   }, 120_000);
 
   beforeEach(async () => {
@@ -34,7 +45,7 @@ describe('Tickets de soporte — API + Prisma + PostgreSQL temporal (CRUD sobre 
   });
 
   it('CREATE: crea un ticket (201) en estado OPEN y lo persiste en PostgreSQL', async () => {
-    const res = await ctx.http().post(TICKETS).send(validTicket()).expect(201);
+    const res = await authed().post(TICKETS).send(validTicket()).expect(201);
 
     expect(res.body).toMatchObject({
       id: expect.any(String),
@@ -51,8 +62,7 @@ describe('Tickets de soporte — API + Prisma + PostgreSQL temporal (CRUD sobre 
   });
 
   it('CREATE: rechaza con 400 un ticket inválido y no persiste nada', async () => {
-    await ctx
-      .http()
+    await authed()
       .post(TICKETS)
       .send({ ...validTicket(), subject: 'x', description: 'corta', referenceType: 'INVALIDO' })
       .expect(400);
@@ -61,36 +71,35 @@ describe('Tickets de soporte — API + Prisma + PostgreSQL temporal (CRUD sobre 
   });
 
   it('READ: obtiene por UUID y por ticketNumber, lista con filtros y responde 404 si no existe', async () => {
-    const a = await ctx.http().post(TICKETS).send(validTicket('trip-it-A')).expect(201);
-    await ctx.http().post(TICKETS).send(validTicket('trip-it-B')).expect(201);
+    const a = await authed().post(TICKETS).send(validTicket('trip-it-A')).expect(201);
+    await authed().post(TICKETS).send(validTicket('trip-it-B')).expect(201);
 
-    const byId = await ctx.http().get(`${TICKETS}/${a.body.id}`).expect(200);
+    const byId = await authed().get(`${TICKETS}/${a.body.id}`).expect(200);
     expect(byId.body.ticketNumber).toBe(a.body.ticketNumber);
 
-    const byNumber = await ctx.http().get(`${TICKETS}/${a.body.ticketNumber}`).expect(200);
+    const byNumber = await authed().get(`${TICKETS}/${a.body.ticketNumber}`).expect(200);
     expect(byNumber.body.id).toBe(a.body.id);
 
-    const all = await ctx.http().get(TICKETS).expect(200);
+    const all = await authed().get(TICKETS).expect(200);
     expect(all.body).toHaveLength(2);
 
-    const filtered = await ctx.http().get(`${TICKETS}?referenceId=trip-it-A`).expect(200);
+    const filtered = await authed().get(`${TICKETS}?referenceId=trip-it-A`).expect(200);
     expect(filtered.body).toHaveLength(1);
     expect(filtered.body[0].id).toBe(a.body.id);
 
-    await ctx.http().get(`${TICKETS}/00000000-0000-0000-0000-000000000000`).expect(404);
+    await authed().get(`${TICKETS}/00000000-0000-0000-0000-000000000000`).expect(404);
   });
 
   it('UPDATE: recorre OPEN → IN_PROGRESS → RESOLVED → CLOSED y persiste cada estado', async () => {
-    const created = await ctx.http().post(TICKETS).send(validTicket()).expect(201);
+    const created = await authed().post(TICKETS).send(validTicket()).expect(201);
     const url = `${TICKETS}/${created.body.id}/status`;
 
-    await ctx.http().patch(url).send({ status: 'IN_PROGRESS' }).expect(200);
+    await authed().patch(url).send({ status: 'IN_PROGRESS' }).expect(200);
     expect((await ctx.prisma.supportTicket.findUniqueOrThrow({ where: { id: created.body.id } })).status).toBe(
       'IN_PROGRESS',
     );
 
-    await ctx
-      .http()
+    await authed()
       .patch(url)
       .send({ status: 'RESOLVED', resolutionNote: 'Reintegro emitido.' })
       .expect(200);
@@ -98,41 +107,36 @@ describe('Tickets de soporte — API + Prisma + PostgreSQL temporal (CRUD sobre 
     expect(resolved.status).toBe('RESOLVED');
     expect(resolved.resolutionNote).toBe('Reintegro emitido.');
 
-    await ctx.http().patch(url).send({ status: 'CLOSED' }).expect(200);
+    await authed().patch(url).send({ status: 'CLOSED' }).expect(200);
     expect((await ctx.prisma.supportTicket.findUniqueOrThrow({ where: { id: created.body.id } })).status).toBe(
       'CLOSED',
     );
   });
 
   it('UPDATE: rechaza con 400 una transición inválida y un ticket CLOSED; 404 si no existe', async () => {
-    const created = await ctx.http().post(TICKETS).send(validTicket()).expect(201);
+    const created = await authed().post(TICKETS).send(validTicket()).expect(201);
     const url = `${TICKETS}/${created.body.id}/status`;
 
     // OPEN → RESOLVED no está permitido (debe pasar por IN_PROGRESS).
-    await ctx.http().patch(url).send({ status: 'RESOLVED' }).expect(400);
+    await authed().patch(url).send({ status: 'RESOLVED' }).expect(400);
     expect((await ctx.prisma.supportTicket.findUniqueOrThrow({ where: { id: created.body.id } })).status).toBe(
       'OPEN',
     );
 
-    await ctx.http().patch(url).send({ status: 'IN_PROGRESS' }).expect(200);
-    await ctx.http().patch(url).send({ status: 'RESOLVED' }).expect(200);
-    await ctx.http().patch(url).send({ status: 'CLOSED' }).expect(200);
-    await ctx.http().patch(url).send({ status: 'OPEN' }).expect(400); // CLOSED es final
+    await authed().patch(url).send({ status: 'IN_PROGRESS' }).expect(200);
+    await authed().patch(url).send({ status: 'RESOLVED' }).expect(200);
+    await authed().patch(url).send({ status: 'CLOSED' }).expect(200);
+    await authed().patch(url).send({ status: 'OPEN' }).expect(400); // CLOSED es final
 
-    await ctx
-      .http()
+    await authed()
       .patch(`${TICKETS}/00000000-0000-0000-0000-000000000000/status`)
       .send({ status: 'IN_PROGRESS' })
       .expect(404);
   });
 
   it('CANÓNICO (/api/v1/tickets): crea, resuelve, reabre (RESUELTO -> EN_REVISION) y persiste historial paginado en PostgreSQL', async () => {
-    const clienteJwt = `Bearer eyJhbGciOiJIUzI1NiJ9.${Buffer.from(
-      JSON.stringify({ sub: 'usr-canon-1', rol: 'CLIENTE' }),
-    ).toString('base64url')}.sig`;
-    const operadorJwt = `Bearer eyJhbGciOiJIUzI1NiJ9.${Buffer.from(
-      JSON.stringify({ sub: 'operador-canon-1', rol: 'OPERADOR' }),
-    ).toString('base64url')}.sig`;
+    const clienteJwt = ctx.issueBearerToken({ sub: 'usr-canon-1', role: 'CLIENTE' });
+    const operadorJwt = ctx.issueBearerToken({ sub: 'operador-canon-1', role: 'OPERADOR' });
 
     const created = await ctx
       .http()

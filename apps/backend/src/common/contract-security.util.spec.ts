@@ -1,95 +1,74 @@
 import {
   BadRequestException,
   ForbiddenException,
-  UnauthorizedException,
   UnprocessableEntityException,
 } from '@nestjs/common';
 import {
   assertResourceOwnership,
   checkIdempotency,
-  parseAndAuthorizeJwt,
+  getIdentityRoles,
+  hasIdentityRole,
   saveIdempotency,
 } from './contract-security.util';
 import type { RedisService } from './redis.service';
 
-function makeJwt(payload: Record<string, unknown>): string {
-  const encoded = Buffer.from(JSON.stringify(payload)).toString('base64url');
-  return `Bearer eyJhbGciOiJIUzI1NiJ9.${encoded}.sig`;
-}
-
 describe('contract-security.util', () => {
-  describe('parseAndAuthorizeJwt', () => {
-    it('permite paso en modo permisivo cuando no se envía Authorization', () => {
-      expect(parseAndAuthorizeJwt(undefined, ['SERVICIO'])).toEqual({
-        authenticated: false,
-      });
-      expect(parseAndAuthorizeJwt('   ', ['CLIENTE'])).toEqual({
-        authenticated: false,
-      });
-    });
-
-    it('rechaza con 401 encabezados sin esquema Bearer, malformados o payloads inválidos', () => {
-      expect(() => parseAndAuthorizeJwt('Basic abc123')).toThrow(UnauthorizedException);
-      expect(() => parseAndAuthorizeJwt('Bearer solo-una-parte')).toThrow(UnauthorizedException);
-      expect(() => parseAndAuthorizeJwt('Bearer hdr.!!!invalido!!!.sig')).toThrow(
-        UnauthorizedException,
-      );
-    });
-
-    it('rechaza con 401 un token expirado (exp en el pasado)', () => {
-      const expired = makeJwt({
+  describe('getIdentityRoles & hasIdentityRole', () => {
+    it('normaliza roles en mayúsculas combinando roles[] y rol', () => {
+      const identity = {
+        authenticated: true,
         sub: 'usr-1',
-        rol: 'CLIENTE',
-        exp: Math.floor(Date.now() / 1000) - 60,
-      });
-      expect(() => parseAndAuthorizeJwt(expired, ['CLIENTE'])).toThrow(UnauthorizedException);
+        rol: 'cliente',
+        roles: ['cliente', 'operador'],
+      };
+      expect(getIdentityRoles(identity)).toEqual(['CLIENTE', 'OPERADOR']);
+      expect(hasIdentityRole(identity, 'OPERADOR')).toBe(true);
+      expect(hasIdentityRole(identity, 'SERVICIO')).toBe(false);
     });
 
-    it('extrae sub y rol desde payload.rol, payload.role o payload.roles[0]', () => {
-      const future = Math.floor(Date.now() / 1000) + 300;
-      expect(parseAndAuthorizeJwt(makeJwt({ sub: 'u1', rol: 'cliente', exp: future }), ['CLIENTE'])).toEqual({
-        authenticated: true,
-        sub: 'u1',
-        rol: 'CLIENTE',
-      });
-      expect(parseAndAuthorizeJwt(makeJwt({ sub: 'u2', role: 'operador' }), ['OPERADOR'])).toEqual({
-        authenticated: true,
-        sub: 'u2',
-        rol: 'OPERADOR',
-      });
-      expect(parseAndAuthorizeJwt(makeJwt({ sub: 'u3', roles: ['servicio'] }), ['SERVICIO'])).toEqual({
-        authenticated: true,
-        sub: 'u3',
-        rol: 'SERVICIO',
-      });
-    });
-
-    it('rechaza con 403 cuando el rol del token no está incluido en allowedRoles', () => {
-      const clienteJwt = makeJwt({ sub: 'usr-1', rol: 'CLIENTE' });
-      expect(() => parseAndAuthorizeJwt(clienteJwt, ['SERVICIO', 'OPERADOR'])).toThrow(
-        ForbiddenException,
-      );
+    it('devuelve lista vacía cuando no hay identidad', () => {
+      expect(getIdentityRoles(undefined)).toEqual([]);
+      expect(hasIdentityRole(undefined, 'CLIENTE')).toBe(false);
     });
   });
 
   describe('assertResourceOwnership', () => {
     it('lanza 403 cuando un CLIENTE o CONDUCTOR autenticado intenta acceder a un recurso ajeno', () => {
       expect(() =>
-        assertResourceOwnership({ authenticated: true, sub: 'usr-1', rol: 'CLIENTE' }, 'usr-2'),
+        assertResourceOwnership(
+          { authenticated: true, sub: 'usr-1', rol: 'CLIENTE', roles: ['CLIENTE'] },
+          'usr-2',
+        ),
       ).toThrow(ForbiddenException);
 
       expect(() =>
-        assertResourceOwnership({ authenticated: true, sub: 'drv-1', rol: 'CONDUCTOR' }, 'drv-2'),
+        assertResourceOwnership(
+          { authenticated: true, sub: 'drv-1', rol: 'CONDUCTOR', roles: ['CONDUCTOR'] },
+          'drv-2',
+        ),
       ).toThrow(ForbiddenException);
     });
 
     it('permite acceso al propietario o a roles administrativos (OPERADOR / SERVICIO)', () => {
       expect(() =>
-        assertResourceOwnership({ authenticated: true, sub: 'usr-1', rol: 'CLIENTE' }, 'usr-1'),
+        assertResourceOwnership(
+          { authenticated: true, sub: 'usr-1', rol: 'CLIENTE', roles: ['CLIENTE'] },
+          'usr-1',
+        ),
       ).not.toThrow();
 
       expect(() =>
-        assertResourceOwnership({ authenticated: true, sub: 'op-1', rol: 'OPERADOR' }, 'usr-2'),
+        assertResourceOwnership(
+          { authenticated: true, sub: 'op-1', rol: 'OPERADOR', roles: ['OPERADOR'] },
+          'usr-2',
+        ),
+      ).not.toThrow();
+
+      expect(() =>
+        assertResourceOwnership(
+          { authenticated: true, sub: 'm6', rol: 'SERVICIO', roles: ['CLIENTE', 'SERVICIO'] },
+          'usr-2',
+        ),
       ).not.toThrow();
 
       expect(() =>

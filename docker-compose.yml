@@ -88,6 +88,8 @@ services:
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
       SMTP_HOST: mailpit
       SMTP_PORT: 1025
+      NODE_ENV: ${NODE_ENV:-development}
+      AUTH_DEV_TOKEN_PROVIDER_ENABLED: ${AUTH_DEV_TOKEN_PROVIDER_ENABLED:-true}
     ports:
       - '3000:3000'                   # Tu PC:3000 -> contenedor:3000
     depends_on:                       # Espera a que las dependencias estén listas

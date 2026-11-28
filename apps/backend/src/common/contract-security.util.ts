@@ -1,7 +1,6 @@
 import {
   BadRequestException,
   ForbiddenException,
-  UnauthorizedException,
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { RedisService } from './redis.service';
@@ -10,91 +9,60 @@ export interface JwtIdentity {
   authenticated: boolean;
   sub?: string;
   rol?: string;
+  roles?: string[];
+}
+
+const PRIVILEGED_ROLES = new Set(['OPERADOR', 'SERVICIO']);
+
+/**
+ * Obtiene la lista normalizada en mayúsculas de roles presentes en una identidad verificada.
+ */
+export function getIdentityRoles(identity?: JwtIdentity): string[] {
+  if (!identity) {
+    return [];
+  }
+  const set = new Set<string>();
+  if (Array.isArray(identity.roles)) {
+    for (const r of identity.roles) {
+      if (typeof r === 'string' && r.trim()) {
+        set.add(r.trim().toUpperCase());
+      }
+    }
+  }
+  if (typeof identity.rol === 'string' && identity.rol.trim()) {
+    set.add(identity.rol.trim().toUpperCase());
+  }
+  return Array.from(set);
 }
 
 /**
- * Extrae y valida la identidad del encabezado Authorization: Bearer <JWT>.
- * - Si no se envía el encabezado, permite el paso (authenticated = false) para
- *   mantener retrocompatibilidad con pruebas unitarias, simuladores y dashboard local.
- * - Si se envía un encabezado malformado o un token expirado, lanza 401 (No autenticado).
- * - Si se especifican allowedRoles y el token declara un rol distinto, lanza 403 (Sin permiso).
+ * Indica si una identidad verificada posee un rol específico (case-insensitive).
  */
-export function parseAndAuthorizeJwt(
-  authHeader?: string,
-  allowedRoles?: string[],
-): JwtIdentity {
-  if (!authHeader || !authHeader.trim()) {
-    return { authenticated: false };
-  }
-
-  if (!authHeader.startsWith('Bearer ')) {
-    throw new UnauthorizedException('El encabezado Authorization debe utilizar el esquema Bearer.');
-  }
-
-  const token = authHeader.slice(7).trim();
-  const parts = token.split('.');
-  if (parts.length < 2 || !parts[1]) {
-    throw new UnauthorizedException('Formato de token JWT inválido.');
-  }
-
-  let payload: Record<string, unknown>;
-  try {
-    const payloadJson = Buffer.from(parts[1], 'base64url').toString('utf8');
-    payload = JSON.parse(payloadJson);
-    if (!payload || typeof payload !== 'object') {
-      throw new Error('Payload no es un objeto');
-    }
-  } catch {
-    throw new UnauthorizedException('No se pudo decodificar el payload del token JWT.');
-  }
-
-  if (typeof payload.exp === 'number' && payload.exp * 1000 < Date.now()) {
-    throw new UnauthorizedException('El token JWT ha expirado.');
-  }
-
-  const sub = typeof payload.sub === 'string' && payload.sub.trim() ? payload.sub.trim() : undefined;
-  const rawRol =
-    typeof payload.rol === 'string'
-      ? payload.rol
-      : typeof payload.role === 'string'
-        ? payload.role
-        : Array.isArray(payload.roles) && typeof payload.roles[0] === 'string'
-          ? payload.roles[0]
-          : undefined;
-  const rol = rawRol ? rawRol.toUpperCase() : undefined;
-
-  if (allowedRoles && allowedRoles.length > 0 && rol) {
-    const normalizedAllowed = allowedRoles.map((r) => r.toUpperCase());
-    if (!normalizedAllowed.includes(rol)) {
-      throw new ForbiddenException(
-        `El rol ${rol} no tiene permiso para esta operación. Roles admitidos: ${normalizedAllowed.join(', ')}.`,
-      );
-    }
-  }
-
-  return {
-    authenticated: true,
-    sub,
-    rol,
-  };
+export function hasIdentityRole(identity: JwtIdentity | undefined, role: string): boolean {
+  return getIdentityRoles(identity).includes(role.trim().toUpperCase());
 }
 
 /**
  * Verifica que un CLIENTE o CONDUCTOR autenticado solo acceda a sus propios recursos (403 si es de otro).
+ * Los roles privilegiados (OPERADOR, SERVICIO) pueden operar sobre recursos de terceros según contrato.
  */
 export function assertResourceOwnership(
-  identity: JwtIdentity,
+  identity: JwtIdentity | undefined,
   resourceOwnerId: string | undefined,
   restrictedRoles: string[] = ['CLIENTE', 'CONDUCTOR'],
 ): void {
-  if (
-    identity.authenticated &&
-    identity.rol &&
-    restrictedRoles.includes(identity.rol.toUpperCase()) &&
-    identity.sub &&
-    resourceOwnerId &&
-    identity.sub !== resourceOwnerId
-  ) {
+  if (!identity?.authenticated || !identity.sub || !resourceOwnerId) {
+    return;
+  }
+
+  const roles = getIdentityRoles(identity);
+  if (roles.some((r) => PRIVILEGED_ROLES.has(r))) {
+    return;
+  }
+
+  const normalizedRestricted = restrictedRoles.map((r) => r.toUpperCase());
+  const isRestricted = roles.some((r) => normalizedRestricted.includes(r));
+  if (isRestricted && identity.sub !== resourceOwnerId) {
     throw new ForbiddenException(
       'Sin permiso: un usuario solo puede acceder u operar sobre sus propios recursos.',
     );

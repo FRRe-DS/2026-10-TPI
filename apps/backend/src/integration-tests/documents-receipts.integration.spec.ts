@@ -10,6 +10,17 @@ import { binaryParser, createIntegrationApp, IntegrationApp } from './support/in
  */
 describe('Comprobantes PDF — API + Prisma + PostgreSQL temporal', () => {
   let ctx: IntegrationApp;
+  let operatorJwt: string;
+  let serviceJwt: string;
+
+  const authed = (token?: string) => {
+    const auth = token ?? operatorJwt;
+    const agent = ctx.http();
+    return {
+      get: (url: string) => agent.get(url).set('Authorization', auth),
+      post: (url: string) => agent.post(url).set('Authorization', auth),
+    };
+  };
 
   const RECEIPTS = '/api/v1/documents/receipts';
   const validBody = (tripId: string) => ({
@@ -23,6 +34,8 @@ describe('Comprobantes PDF — API + Prisma + PostgreSQL temporal', () => {
 
   beforeAll(async () => {
     ctx = await createIntegrationApp();
+    operatorJwt = ctx.issueBearerToken({ sub: 'operador-it-doc', role: 'OPERADOR' });
+    serviceJwt = ctx.issueBearerToken({ sub: 'm6-viajes', role: 'SERVICIO' });
   }, 120_000);
 
   beforeEach(async () => {
@@ -35,7 +48,7 @@ describe('Comprobantes PDF — API + Prisma + PostgreSQL temporal', () => {
   });
 
   it('registra un comprobante: responde 201 y lo persiste realmente en PostgreSQL', async () => {
-    const res = await ctx.http().post(RECEIPTS).send(validBody('trip-it-register')).expect(201);
+    const res = await authed().post(RECEIPTS).send(validBody('trip-it-register')).expect(201);
 
     expect(res.body).toEqual({
       id: expect.any(String),
@@ -62,8 +75,8 @@ describe('Comprobantes PDF — API + Prisma + PostgreSQL temporal', () => {
   });
 
   it('repetir el registro del mismo tripId devuelve el mismo comprobante y no crea duplicados', async () => {
-    const first = await ctx.http().post(RECEIPTS).send(validBody('trip-it-repeat')).expect(201);
-    const second = await ctx.http().post(RECEIPTS).send(validBody('trip-it-repeat')).expect(201);
+    const first = await authed().post(RECEIPTS).send(validBody('trip-it-repeat')).expect(201);
+    const second = await authed().post(RECEIPTS).send(validBody('trip-it-repeat')).expect(201);
 
     expect(second.body.id).toBe(first.body.id);
     expect(second.body.receiptCode).toBe(first.body.receiptCode);
@@ -74,7 +87,7 @@ describe('Comprobantes PDF — API + Prisma + PostgreSQL temporal', () => {
   it('solicitudes simultáneas del mismo tripId no duplican (advisory lock de PostgreSQL)', async () => {
     const responses = await Promise.all(
       Array.from({ length: 8 }, () =>
-        ctx.http().post(RECEIPTS).send(validBody('trip-it-concurrent')),
+        authed().post(RECEIPTS).send(validBody('trip-it-concurrent')),
       ),
     );
 
@@ -89,8 +102,8 @@ describe('Comprobantes PDF — API + Prisma + PostgreSQL temporal', () => {
   });
 
   it('viajes distintos generan comprobantes distintos con receiptCode único', async () => {
-    const a = await ctx.http().post(RECEIPTS).send(validBody('trip-it-A')).expect(201);
-    const b = await ctx.http().post(RECEIPTS).send(validBody('trip-it-B')).expect(201);
+    const a = await authed().post(RECEIPTS).send(validBody('trip-it-A')).expect(201);
+    const b = await authed().post(RECEIPTS).send(validBody('trip-it-B')).expect(201);
 
     expect(a.body.id).not.toBe(b.body.id);
     expect(a.body.receiptCode).not.toBe(b.body.receiptCode);
@@ -98,8 +111,7 @@ describe('Comprobantes PDF — API + Prisma + PostgreSQL temporal', () => {
   });
 
   it('rechaza con 400 un cuerpo inválido y no persiste nada', async () => {
-    await ctx
-      .http()
+    await authed()
       .post(RECEIPTS)
       .send({ ...validBody('trip-it-invalid'), amount: -10, passengerEmail: 'no-es-un-email' })
       .expect(400);
@@ -108,11 +120,10 @@ describe('Comprobantes PDF — API + Prisma + PostgreSQL temporal', () => {
   });
 
   it('descarga el PDF de un comprobante existente sin crear ni modificar registros', async () => {
-    const created = await ctx.http().post(RECEIPTS).send(validBody('trip-it-download')).expect(201);
+    const created = await authed().post(RECEIPTS).send(validBody('trip-it-download')).expect(201);
     const before = await ctx.prisma.documentReceipt.findUniqueOrThrow({ where: { id: created.body.id } });
 
-    const res = await ctx
-      .http()
+    const res = await authed()
       .get(`${RECEIPTS}/trip-it-download/download`)
       .buffer(true)
       .parse(binaryParser)
@@ -134,7 +145,7 @@ describe('Comprobantes PDF — API + Prisma + PostgreSQL temporal', () => {
   });
 
   it('responde 404 al descargar un tripId inexistente y no crea registros', async () => {
-    const res = await ctx.http().get(`${RECEIPTS}/trip-it-inexistente/download`).expect(404);
+    const res = await authed().get(`${RECEIPTS}/trip-it-inexistente/download`).expect(404);
 
     expect(res.body.message).toContain('trip-it-inexistente');
     expect(await ctx.prisma.documentReceipt.count()).toBe(0);
@@ -144,8 +155,7 @@ describe('Comprobantes PDF — API + Prisma + PostgreSQL temporal', () => {
     const tripId = '77777777-7777-4777-8777-777777777777';
     const passengerId = '88888888-8888-4888-8888-888888888888';
 
-    await ctx
-      .http()
+    await authed(serviceJwt)
       .post('/api/v1/eventos')
       .send({
         eventoId: '99999999-9999-4999-8999-999999999999',
@@ -179,8 +189,7 @@ describe('Comprobantes PDF — API + Prisma + PostgreSQL temporal', () => {
     ).toBe('%PDF-');
 
     // Descarga en el endpoint canónico GET /api/v1/comprobantes/{id}/pdf usando comprobanteId (UUID)
-    const downloadRes = await ctx
-      .http()
+    const downloadRes = await authed()
       .get(`/api/v1/comprobantes/${row.id}/pdf`)
       .buffer(true)
       .parse(binaryParser)
@@ -191,15 +200,13 @@ describe('Comprobantes PDF — API + Prisma + PostgreSQL temporal', () => {
     expect(downloadedPdf.subarray(0, 5).toString('latin1')).toBe('%PDF-');
     expect(downloadedPdf.toString('latin1')).toContain('%%EOF');
 
-    await ctx
-      .http()
+    await authed()
       .get('/api/v1/comprobantes/00000000-0000-4000-8000-000000000000/pdf')
       .expect(404);
 
     // Reenvío en el endpoint canónico POST /api/v1/comprobantes/{id}/reenvios
     ctx.mailer.sent.length = 0;
-    const resendRes = await ctx
-      .http()
+    const resendRes = await authed()
       .post(`/api/v1/comprobantes/${row.id}/reenvios`)
       .set('Idempotency-Key', 'idem-it-reenvio-001')
       .send({ canal: 'EMAIL' })

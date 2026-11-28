@@ -2,7 +2,6 @@ import { Test, TestingModule } from '@nestjs/testing';
 import {
   ForbiddenException,
   NotFoundException,
-  UnauthorizedException,
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { SupportController } from './support.controller';
@@ -13,6 +12,7 @@ import {
   TicketStatusDto,
   UpdateTicketStatusDto,
 } from '../../application/dto/support.dto';
+import { AuthenticatedIdentity } from '../../../../common/auth';
 
 describe('SupportController (RF-8.7)', () => {
   let controller: SupportController;
@@ -115,11 +115,13 @@ describe('SupportController (RF-8.7)', () => {
   });
 
   describe('Rutas Canónicas del Contrato Coordinado Definitivo (G10 + G7)', () => {
-    it('POST /tickets (crearTicketUnificado) debe priorizar el sub del JWT Bearer cuando está presente', async () => {
-      const payloadBase64 = Buffer.from(
-        JSON.stringify({ sub: 'usr-jwt-999', rol: 'CLIENTE' }),
-      ).toString('base64url');
-      const fakeJwt = `Bearer eyJhbGciOiJIUzI1NiJ9.${payloadBase64}.sig`;
+    it('POST /tickets (crearTicketUnificado) debe priorizar el sub de la identidad verificada cuando está presente', async () => {
+      const clienteIdentity: AuthenticatedIdentity = {
+        authenticated: true,
+        sub: 'usr-jwt-999',
+        rol: 'CLIENTE',
+        roles: ['CLIENTE'],
+      };
 
       const res = await controller.crearTicketUnificado(
         {
@@ -128,7 +130,7 @@ describe('SupportController (RF-8.7)', () => {
           descripcion: 'El conductor cobró un recargo indebido.',
           usuarioId: 'usr-body-ignorado',
         },
-        fakeJwt,
+        clienteIdentity,
       );
 
       expect(service.create).toHaveBeenCalledWith(
@@ -180,22 +182,20 @@ describe('SupportController (RF-8.7)', () => {
       expect(service.appendHistory).toHaveBeenCalled();
     });
 
-    it('debe validar RBAC y ownership sobre JWT Bearer (401 token malformado, 403 acceso a ticket ajeno)', async () => {
-      await expect(
-        controller.obtenerTicketUnificado('ticket-uuid-1', 'Bearer token-invalido'),
-      ).rejects.toThrow(UnauthorizedException);
-
-      const otroClientePayload = Buffer.from(
-        JSON.stringify({ sub: 'usr-otro-999', rol: 'CLIENTE' }),
-      ).toString('base64url');
-      const otroClienteJwt = `Bearer eyJhbGciOiJIUzI1NiJ9.${otroClientePayload}.sig`;
+    it('debe validar ownership sobre la identidad verificada (403 acceso a ticket ajeno)', async () => {
+      const otroClienteIdentity: AuthenticatedIdentity = {
+        authenticated: true,
+        sub: 'usr-otro-999',
+        rol: 'CLIENTE',
+        roles: ['CLIENTE'],
+      };
 
       await expect(
-        controller.obtenerTicketUnificado('ticket-uuid-1', otroClienteJwt),
+        controller.obtenerTicketUnificado('ticket-uuid-1', otroClienteIdentity),
       ).rejects.toThrow(ForbiddenException);
     });
 
-    it('GET /tickets/:ticketId/historial debe devolver historial cronológico paginado y aplicar RBAC/404', async () => {
+    it('GET /tickets/:ticketId/historial debe devolver historial cronológico paginado y aplicar ownership/404', async () => {
       const entries = [
         {
           estadoAnterior: 'ABIERTO',
@@ -220,15 +220,18 @@ describe('SupportController (RF-8.7)', () => {
       ];
       (service.getHistory as jest.Mock).mockResolvedValueOnce(entries);
 
-      const clientePropioJwt = `Bearer eyJhbGciOiJIUzI1NiJ9.${Buffer.from(
-        JSON.stringify({ sub: 'usr-pass-456', rol: 'CLIENTE' }),
-      ).toString('base64url')}.sig`;
+      const clientePropioIdentity: AuthenticatedIdentity = {
+        authenticated: true,
+        sub: 'usr-pass-456',
+        rol: 'CLIENTE',
+        roles: ['CLIENTE'],
+      };
 
       const page0 = await controller.listarHistorialTicket(
         'ticket-uuid-1',
         '0',
         '2',
-        clientePropioJwt,
+        clientePropioIdentity,
       );
       expect(page0).toEqual({
         page: 0,
@@ -239,16 +242,19 @@ describe('SupportController (RF-8.7)', () => {
         elementos: entries.slice(0, 2),
       });
 
-      const otroClienteJwt = `Bearer eyJhbGciOiJIUzI1NiJ9.${Buffer.from(
-        JSON.stringify({ sub: 'usr-otro-999', rol: 'CLIENTE' }),
-      ).toString('base64url')}.sig`;
+      const otroClienteIdentity: AuthenticatedIdentity = {
+        authenticated: true,
+        sub: 'usr-otro-999',
+        rol: 'CLIENTE',
+        roles: ['CLIENTE'],
+      };
       await expect(
-        controller.listarHistorialTicket('ticket-uuid-1', '0', '10', otroClienteJwt),
+        controller.listarHistorialTicket('ticket-uuid-1', '0', '10', otroClienteIdentity),
       ).rejects.toThrow(ForbiddenException);
 
       (service.findOne as jest.Mock).mockRejectedValueOnce(new NotFoundException('No existe'));
       await expect(
-        controller.listarHistorialTicket('ticket-inexistente', '0', '10', clientePropioJwt),
+        controller.listarHistorialTicket('ticket-inexistente', '0', '10', clientePropioIdentity),
       ).rejects.toThrow(NotFoundException);
     });
   });

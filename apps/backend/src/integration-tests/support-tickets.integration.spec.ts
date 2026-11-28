@@ -125,4 +125,85 @@ describe('Tickets de soporte — API + Prisma + PostgreSQL temporal (CRUD sobre 
       .send({ status: 'IN_PROGRESS' })
       .expect(404);
   });
+
+  it('CANÓNICO (/api/v1/tickets): crea, resuelve, reabre (RESUELTO -> EN_REVISION) y persiste historial paginado en PostgreSQL', async () => {
+    const clienteJwt = `Bearer eyJhbGciOiJIUzI1NiJ9.${Buffer.from(
+      JSON.stringify({ sub: 'usr-canon-1', rol: 'CLIENTE' }),
+    ).toString('base64url')}.sig`;
+    const operadorJwt = `Bearer eyJhbGciOiJIUzI1NiJ9.${Buffer.from(
+      JSON.stringify({ sub: 'operador-canon-1', rol: 'OPERADOR' }),
+    ).toString('base64url')}.sig`;
+
+    const created = await ctx
+      .http()
+      .post('/api/v1/tickets')
+      .set('Authorization', clienteJwt)
+      .set('Idempotency-Key', 'idem-it-ticket-01')
+      .send({
+        referencia: { tipo: 'VIAJE', id: 'trip-canon-reopen-01' },
+        titulo: 'Objeto olvidado en el vehículo',
+        descripcion: 'Dejé una mochila en el asiento trasero al bajar.',
+      })
+      .expect(201);
+
+    const ticketId = created.body.ticketId;
+    expect(created.body.estado).toBe('ABIERTO');
+
+    await ctx
+      .http()
+      .patch(`/api/v1/tickets/${ticketId}`)
+      .set('Authorization', operadorJwt)
+      .send({ estado: 'EN_REVISION', motivo: 'Contactando al conductor' })
+      .expect(200);
+
+    await ctx
+      .http()
+      .patch(`/api/v1/tickets/${ticketId}`)
+      .set('Authorization', operadorJwt)
+      .send({ estado: 'RESUELTO', resolucion: 'Conductor confirmó entrega en base' })
+      .expect(200);
+
+    // Reapertura RESUELTO -> EN_REVISION (RF-8.7 / PR #12)
+    const reopened = await ctx
+      .http()
+      .patch(`/api/v1/tickets/${ticketId}`)
+      .set('Authorization', operadorJwt)
+      .send({ estado: 'EN_REVISION', motivo: 'Pasajero indica que aún no retiró el objeto' })
+      .expect(200);
+
+    expect(reopened.body.estado).toBe('EN_REVISION');
+
+    const historialPage0 = await ctx
+      .http()
+      .get(`/api/v1/tickets/${ticketId}/historial?page=0&size=2`)
+      .set('Authorization', clienteJwt)
+      .expect(200);
+
+    expect(historialPage0.body).toMatchObject({
+      page: 0,
+      size: 2,
+      totalElementos: 3,
+      totalPaginas: 2,
+    });
+    expect(historialPage0.body.items).toHaveLength(2);
+
+    const historialPage1 = await ctx
+      .http()
+      .get(`/api/v1/tickets/${ticketId}/historial?page=1&size=2`)
+      .set('Authorization', clienteJwt)
+      .expect(200);
+
+    expect(historialPage1.body.items).toHaveLength(1);
+    expect(historialPage1.body.items[0]).toMatchObject({
+      estadoAnterior: 'RESUELTO',
+      estadoNuevo: 'EN_REVISION',
+      actorId: 'operador-canon-1',
+      motivo: 'Pasajero indica que aún no retiró el objeto',
+    });
+
+    const msgRows = await ctx.prisma.ticketMessage.findMany({
+      where: { ticketId, senderRole: 'HISTORIAL_ESTADO' },
+    });
+    expect(msgRows).toHaveLength(3);
+  });
 });

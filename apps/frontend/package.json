@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "test": "rm -rf .test-dist && tsc -p tsconfig.test.json && printf '{\"type\":\"commonjs\"}\n' > .test-dist/package.json && node --test .test-dist/*.test.js && rm -rf .test-dist",
     "preview": "vite preview"
   },
   "dependencies": {
